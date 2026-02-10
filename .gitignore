@@ -1,0 +1,22 @@
+# Build directory
+builddir/
+.cache/
+
+# OS specific
+.DS_Store
+.vscode/
+
+# Build artifacts
+*.o
+*.a
+*.dylib
+*.so
+compile_commands.json
+
+# Runtime/Debug
+leaks.trace
+profile_thermal.d
+sample_output.txt
+
+# Reference material
+FOR_REFERENCE_ONLY/
