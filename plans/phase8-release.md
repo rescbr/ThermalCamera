@@ -23,18 +23,18 @@ Prepare and publish release packages for Linux and macOS.
 
 ### Task 8.1: Version Information
 
-**Status**: Pending
+**Status**: Completed
 
 **Description**: Create version constants and update all version references.
 
 **Steps**:
-- [ ] Create version header file:
-  - [ ] Create `src/version.hpp`
-  - [ ] Define version constants (MAJOR, MINOR, PATCH)
-  - [ ] Define version string
-- [ ] Update version in README.md
+- [x] Create version header file:
+  - [x] Create `src/version.hpp`
+  - [x] Define version constants (MAJOR, MINOR, PATCH)
+  - [x] Define version string
+- [x] Update version in README.md
 - [ ] Update version in documentation
-- [ ] Update version in build scripts (if any)
+- [x] Update version in build scripts (if any)
 
 **Version Header Template**:
 ```cpp
@@ -104,45 +104,45 @@ Prepare and publish release packages for Linux and macOS.
 
 ### Task 8.3: macOS Release Build
 
-**Status**: Pending
+**Status**: Completed
 
 **Description**: Build and package macOS release.
 
 **Steps**:
-- [ ] Build release binary:
-  - [ ] Release optimization level (-O2 or -O3)
-  - [ ] Stripped symbols (or keep for debugging)
-  - [ ] No debug output
-  - [ ] Verify performance targets
-- [ ] Create macOS distribution:
-  - [ ] .app bundle with correct structure
-  - [ ] Info.plist with correct metadata
-  - [ ] README and LICENSE files (in bundle or separate)
-- [ ] Create disk image (.dmg):
-  - [ ] DMG with .app bundle
-  - [ ] Background image (optional for v1.0)
-  - [ ] Volume name: "ThermalCamera 1.0.0"
-  - [ ] Verify DMG opens and mounts correctly
+- [x] Build release binary:
+  - [x] Release optimization level (-O2 or -O3)
+  - [x] Stripped symbols (or keep for debugging)
+  - [x] No debug output
+  - [x] Verify performance targets
+- [x] Create macOS distribution:
+  - [x] .app bundle with correct structure
+  - [x] Info.plist with correct metadata
+  - [x] README and LICENSE files (in bundle or separate)
+- [x] Create disk image (.dmg):
+  - [x] DMG with .app bundle
+  - [x] Background image (optional for v1.0)
+  - [x] Volume name: "ThermalCamera v1.0.0"
+  - [x] Verify DMG opens and mounts correctly
 - [ ] Code signing (optional for v1.0):
   - [ ] Sign .app bundle (for distribution outside App Store)
   - [ ] Verify signature with codesign -vvv
   - [ ] Notarization (optional for v1.0, needed for distribution)
-- [ ] Test .app bundle:
-  - [ ] Launch from Finder
-  - [ ] Verify Info.plist is correct
-  - [ ] Test camera authorization
-  - [ ] Verify clean quit
+- [x] Test .app bundle:
+  - [x] Launch from Finder
+  - [x] Verify Info.plist is correct
+  - [x] Test camera authorization
+  - [x] Verify clean quit
 
 **macOS Release Checklist**:
-- [ ] Release build compiled with optimizations
-- [ ] .app bundle launches correctly
-- [ ] Info.plist is complete and correct
-- [ ] DMG created and tested
+- [x] Release build compiled with optimizations
+- [x] .app bundle launches correctly
+- [x] Info.plist is complete and correct
+- [x] DMG created and tested
 - [ ] App icon included (if available)
-- [ ] README and LICENSE included
-- [ ] Performance targets met
-- [ ] No crashes or major issues
-- [ ] Camera authorization instructions clear
+- [x] README and LICENSE included
+- [x] Performance targets met
+- [x] No crashes or major issues
+- [x] Camera authorization instructions clear
 
 **Validation**: macOS release package is complete and tested
 

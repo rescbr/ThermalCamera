@@ -7,6 +7,8 @@
 #include "vendor/cmdline/cmdline.h"
 #include "vendor/ctpl/ctpl_stl_tls.h"
 
+#include "version.hpp"
+
 #include <iostream>
 #include <vector>
 #include <atomic>
@@ -124,10 +126,17 @@ int main(int argc, char** argv)
         cmd.add<int>("threads", 0, "override thread count (default 3)", false, 3);
         cmd.add("list", 'l', "list all available cameras and their formats");
         cmd.add("help", 'h', "display this help and exit");
+        cmd.add("version", 'v', "display version information");
 
         if (!cmd.parse(argc, argv) || cmd.exist("help"))
         {
             std::cerr << cmd.error_full() << cmd.usage();
+            return 0;
+        }
+
+        if (cmd.exist("version"))
+        {
+            std::cout << "ThermalCamera v" << THERMALCAMERA_VERSION_STRING << "\n";
             return 0;
         }
 
