@@ -9,10 +9,10 @@ ThermalCamera employs a multi-threaded architecture optimized for low-latency vi
 1.  **Camera Thread (Producer)**
     -   **Responsibility**: Interfaces with hardware (libuvc/AVFoundation).
     -   **Behavior**:
-        -   Runs in a dedicated thread to service camera driver callbacks or polling loops.
+        -   Runs in a dedicated thread with a **Blocking Loop** (waits for new frame or timeout) to minimize CPU usage.
         -   Writes raw YUYV frames into a `SharedState` buffer managed by `FrameBuffer`.
-        -   Handles platform-specific camera initialization and error recovery.
-    -   **Synchronization**: Uses a mutex to swap the "write" buffer with the "read" buffer when a full frame is ready.
+        -   **Reconnection**: Handles dynamic camera hotplugging by detecting disconnects and re-scanning for devices (essential for macOS Location ID changes).
+    -   **Synchronization**: Uses a mutex/semaphore to block until hardware provides data.
 
 2.  **Processing Thread (Consumer/Producer)**
     -   **Responsibility**: Converts raw data to thermal values (Kelvin).
@@ -85,6 +85,11 @@ The system uses an interface-based design for hardware abstraction:
 ### Error Handling & Reliability
 
 *   **Global Exception Handling**: Top-level try-catch blocks in `main` and thread workers to prevent crashes.
+*   **Platform-Specific Error Handling**:
+    *   **macOS**: Listens for `AVCaptureDeviceWasDisconnectedNotification` to trigger immediate recovery.
+    *   **Reconnection Loop**: Automatically retries connection every second if camera is lost, re-scanning device paths if necessary.
+*   **Rendering Robustness**:
+    *   **Letterboxing**: Uses `SDL_RenderSetViewport` to maintain correct aspect ratio regardless of window size or fullscreen state.
 *   **Graceful Degredation**:
     *   **Camera Disconnect**: Automatically enters a "frozen" state if the camera is unplugged, with a visual indicator.
     *   **Resource Cleanup**: RAII wrappers ensure file handles, textures, and memory are released on exit or error.
