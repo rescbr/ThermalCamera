@@ -275,7 +275,8 @@ For issues and questions, please use the project's issue tracker.
 
 ## Acknowledgments
 
-- SDL2 library for cross-platform graphics
-- libuvc for Linux USB camera support
-- AVFoundation for macOS camera support
-- Thermal-Camera-Redux reference implementation
+- **Thermal-Camera-Redux**: Base reference implementation by [92es](https://github.com/92es/Thermal-Camera-Redux)
+- **PyThermalCamera**: Inspiration for temperature conversion logic by [leswright1977](https://github.com/leswright1977/PyThermalCamera)
+- **SDL2**: Cross-platform graphics library
+- **libuvc**: Linux USB camera support
+- **AVFoundation**: macOS camera support
