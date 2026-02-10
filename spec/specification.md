@@ -26,7 +26,7 @@
 *   **Auto-detection**: Automatically finds connected thermal camera if no device path provided.
 *   **Manual Selection**: `-d` argument for specific device path (Linux: `/dev/video0`, macOS: Location ID).
 *   **Streaming**: Continuous capture at ~25 FPS.
-*   **Hotplug**: Graceful error handling on disconnect (freezes last frame).
+*   **Hotplug**: Graceful handling of disconnects with automatic reconnection attempts.
 
 ### 2.2 Image Processing
 *   **Raw Data**: Extracts 16-bit Kelvin values from the Y channel of the bottom half of the frame (rows 192-383).
