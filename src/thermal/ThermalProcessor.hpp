@@ -50,6 +50,9 @@ namespace Thermal
         void CalculateTemperatureStats(ThermalFrame& frame);
         void ApplyRotation(ThermalFrame& frame);
 
+        // Helper for temperature lookup without bounds checking (internal use only)
+        static Temperature GetTemperatureAtIndex(uint16_t kelvin, int row, int col);
+
         // Conversion helpers
         static float KelvinToCelsius(uint16_t kelvin);
         static float CelsiusToFahrenheit(float celsius);

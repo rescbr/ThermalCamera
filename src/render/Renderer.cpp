@@ -229,15 +229,30 @@ namespace Render
         if (_showHud) {
             PROFILE_SCOPE("RenderHUD");
             
-            // Transform mouse coordinates to Logical Space for the HUD
-            int realMouseX = _mouseX;
-            int realMouseY = _mouseY;
-            
-            if (minScale > 0) {
-                // Map Screen -> Viewport-Relative -> Logical
-                _mouseX = (int)((realMouseX - viewportRect.x) / minScale);
-                _mouseY = (int)((realMouseY - viewportRect.y) / minScale);
+        // Transform mouse coordinates to Logical Space for the HUD
+        // Use actual rendered image size, not configured scale
+        int realMouseX = _mouseX;
+        int realMouseY = _mouseY;
+
+        if (viewportRect.w > 0 && viewportRect.h > 0 && minScale > 0) {
+            // Map Screen -> Viewport-Relative -> Logical (based on actual rendered size)
+            int relativeX = _mouseX - viewportRect.x;
+            int relativeY = _mouseY - viewportRect.y;
+
+            // Clamp to destRect bounds
+            if (relativeX >= 0 && relativeX < viewportRect.w && relativeY >= 0 && relativeY < viewportRect.h) {
+                // Map from rendered image size to thermal frame size
+                _mouseX = (relativeX * frame._width) / viewportRect.w;
+                _mouseY = (relativeY * frame._height) / viewportRect.h;
+            } else {
+                // Mouse is outside rendered image area
+                _mouseX = -1;
+                _mouseY = -1;
             }
+        } else {
+            _mouseX = -1;
+            _mouseY = -1;
+        }
 
             RenderHUD(frame);
             
@@ -270,18 +285,15 @@ namespace Render
 
         uint16_t minK = frame._min._kelvin;
         uint16_t maxK = frame._max._kelvin;
-        
+
         if (minK >= maxK) {
             maxK = minK + 1;
         }
-        
-        float range = static_cast<float>(maxK - minK);
-        float scale = 255.0f / range;
-        
+
+        int range = maxK - minK;
         int cmapIdx = _config.GetColormapIndex();
         if (cmapIdx < 0) cmapIdx = 0;
-        const ColormapEntry& map = AVAILABLE_COLORMAPS[cmapIdx % COLORMAP_COUNT];
-        const Colormaps::colormap_color_t* palette = map.data;
+        const uint32_t* palette = _packedColormaps[cmapIdx % COLORMAP_COUNT].data();
 
         const size_t pixelCount = frame._data.size();
         const uint16_t* input = frame._data.data();
@@ -290,20 +302,19 @@ namespace Render
         for (size_t i = 0; i < pixelCount; ++i)
         {
             uint16_t val = input[i];
-            
+
             // Clamp value
             if (val < minK) val = minK;
             if (val > maxK) val = maxK;
-            
-            // Map to 0-255
-            int index = static_cast<int>((val - minK) * scale);
+
+            // Map to 0-255 using integer math
+            uint32_t delta = val - minK;
+            int index = (delta * 255) / range;
             if (index < 0) index = 0;
             if (index > 255) index = 255;
-            
-            const auto& color = palette[index];
-            
-            // Pack ARGB
-            outputBuffer[i] = (255 << 24) | (color.r << 16) | (color.g << 8) | color.b;
+
+            // Direct lookup from pre-packed ARGB palette
+            outputBuffer[i] = palette[index];
         }
     }
     
@@ -356,6 +367,26 @@ namespace Render
                                                 (static_cast<uint8_t>(g) << 8) | 
                                                 static_cast<uint8_t>(b);
             }
+        }
+    }
+
+    void Renderer::InitializeColormaps()
+    {
+        _packedColormaps.clear();
+        _packedColormaps.reserve(COLORMAP_COUNT);
+
+        for (int cmapIdx = 0; cmapIdx < COLORMAP_COUNT; ++cmapIdx)
+        {
+            const ColormapEntry& map = AVAILABLE_COLORMAPS[cmapIdx];
+            std::vector<uint32_t> packed(256);
+
+            for (int i = 0; i < 256; ++i)
+            {
+                const auto& color = map.data[i];
+                packed[i] = (255 << 24) | (color.r << 16) | (color.g << 8) | color.b;
+            }
+
+            _packedColormaps.push_back(std::move(packed));
         }
     }
 
@@ -452,30 +483,28 @@ namespace Render
         std::string centerT = formatTemp(frame._center._celsius, frame._center._fahrenheit);
         DrawText(centerT, centerX + 5, centerY - 5);
         
-        // Mouse Probe
+         // Mouse Probe
         if (_isProbeEnabled && _mouseX >= 0 && _mouseY >= 0) {
-            // Map mouse to frame coordinates
-            // Need to account for scale AND rotation?
-            // The frame is already rotated in ThermalProcessor before RenderFrame gets it.
-            // But we scale it here.
-            
-            // Mouse is in Window coordinates (which are scaled)
-            int frameX = _mouseX / scale;
-            int frameY = _mouseY / scale;
-            
-            if (frameX >= 0 && frameX < frame._width && frameY >= 0 && frameY < frame._height) {
-                Thermal::Temperature t = Thermal::ThermalProcessor::GetTemperatureAt(frame, frameY, frameX);
-                
+            // _mouseX and _mouseY are already in thermal frame coordinates (0-frame._width, 0-frame._height)
+            // We need to scale them to the actual rendered image space for drawing
+            // Thermal frame size is frame._width x frame._height
+            // Rendered image size is viewportRect.w x viewportRect.h
+            int drawX = (_mouseX * width) / frame._width;
+            int drawY = (_mouseY * height) / frame._height;
+
+            if (_mouseX >= 0 && _mouseX < frame._width && _mouseY >= 0 && _mouseY < frame._height) {
+                Thermal::Temperature t = Thermal::ThermalProcessor::GetTemperatureAt(frame, _mouseY, _mouseX);
+
                 std::string probeT = formatTemp(t._celsius, t._fahrenheit);
-                DrawText(probeT, _mouseX + 10, _mouseY);
-                
+                DrawText(probeT, drawX + 10, drawY + 10);
+
                 // Draw small box/cross at cursor
                 SDL_SetRenderDrawColor(_renderer, 255, 255, 0, 255);
-                SDL_Rect rect = {_mouseX - 2, _mouseY - 2, 5, 5};
-                SDL_RenderDrawRect(_renderer, &rect);
+                SDL_Rect rect = {drawX - 2, drawY - 2, 5, 5};
+                 SDL_RenderDrawRect(_renderer, &rect);
             }
         }
-        
+
         // Bottom: Controls hint
         if (height > 100) {
             DrawText("[H] Toggle HUD  [Space] Freeze  [Q] Quit", 10, height - 10);
@@ -617,6 +646,9 @@ namespace Render
         // Texture and buffers will be created in RenderFrame on first frame if missing,
         // or we can create them here.
         // Let's create them here to fail early if memory issue.
+        // Initialize pre-packed colormaps
+        InitializeColormaps();
+
         int targetW = width * scale;
         int targetH = height * scale;
         

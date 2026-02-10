@@ -35,9 +35,10 @@ namespace Render
     private:
         // Internal helpers
         void ApplyColormap(const Thermal::ThermalFrame& frame, uint32_t* outputBuffer);
+        void InitializeColormaps();
         void ScaleFrame(const uint32_t* sourceBuffer, uint32_t* destBuffer, int srcWidth, int srcHeight, int destWidth, int destHeight);
         void RenderHUD(const Thermal::ThermalFrame& frame);
-        
+
         // Font rendering helpers
         void DrawText(const std::string& text, int x, int y, uint32_t color = 0xFFFFFFFF);
 
@@ -46,10 +47,13 @@ namespace Render
         SDL_Window* _window;
         SDL_Renderer* _renderer;
         SDL_Texture* _texture;
-        
+
         // Buffers
-        std::vector<uint32_t> _pixelBuffer; // Buffer for colormapped image (before scaling)
-        std::vector<uint32_t> _scaledBuffer; // Buffer for scaled image (if doing CPU scaling, though SDL texture scaling might be faster)
+        std::vector<uint32_t> _pixelBuffer;
+        std::vector<uint32_t> _scaledBuffer;
+
+        // Pre-packed colormaps
+        std::vector<std::vector<uint32_t>> _packedColormaps;
 
         int _windowWidth;
         // int _windowHeight; // Remove if not needed, or keep for init

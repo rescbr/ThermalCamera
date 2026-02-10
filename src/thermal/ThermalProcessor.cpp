@@ -170,10 +170,13 @@ namespace Thermal
 
         uint16_t avgK = static_cast<uint16_t>(sumK / pixelCount);
 
-        // Populate stats
-        frame._min = GetTemperatureAt(frame, minIdx / frame._width, minIdx % frame._width);
-        frame._max = GetTemperatureAt(frame, maxIdx / frame._width, maxIdx % frame._width);
-        
+        const int frameW = frame._width;
+        const int frameH = frame._height;
+
+        // Populate stats - use internal helper without bounds checking
+        frame._min = GetTemperatureAtIndex(minK, minIdx / frameW, minIdx % frameW);
+        frame._max = GetTemperatureAtIndex(maxK, maxIdx / frameW, maxIdx % frameW);
+
         // For avg, set as a pseudo-temperature
         frame._avg._kelvin = avgK;
         frame._avg._celsius = KelvinToCelsius(avgK);
@@ -181,8 +184,20 @@ namespace Thermal
         frame._avg._row = -1;
         frame._avg._col = -1;
 
-        // Center temperature
-        frame._center = GetTemperatureAt(frame, frame._height / 2, frame._width / 2);
+        // Center temperature - no bounds checking needed for center point
+        int centerIdx = (frameH / 2) * frameW + (frameW / 2);
+        frame._center = GetTemperatureAtIndex(frame._data[centerIdx], frameH / 2, frameW / 2);
+    }
+
+    Temperature ThermalProcessor::GetTemperatureAtIndex(uint16_t kelvin, int row, int col)
+    {
+        Temperature temp;
+        temp._row = row;
+        temp._col = col;
+        temp._kelvin = kelvin;
+        temp._celsius = KelvinToCelsius(kelvin);
+        temp._fahrenheit = CelsiusToFahrenheit(temp._celsius);
+        return temp;
     }
 
     Temperature ThermalProcessor::GetTemperatureAt(const ThermalFrame& frame, int row, int col)
