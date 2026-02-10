@@ -56,6 +56,7 @@
         _videoOutput = nil;
         _captureQueue = dispatch_queue_create("com.thermalcamera.capture", DISPATCH_QUEUE_SERIAL);
         _frameSemaphore = dispatch_semaphore_create(1);
+        _frameAvailableSemaphore = dispatch_semaphore_create(0);
         _latestBuffer = nil;
     if (_videoOutput)
     {
@@ -63,17 +64,36 @@
     }
     
     _isRunning = false;
+    _isDisconnected = false;
+    
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(deviceDisconnected:)
+                                                 name:AVCaptureDeviceWasDisconnectedNotification
+                                               object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(deviceDisconnected:)
+                                                 name:AVCaptureSessionRuntimeErrorNotification
+                                               object:nil];
     }
     return self;
 }
 
 - (void)dealloc
 {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
     [self stopStreaming];
 }
 
 - (bool)initialize:(NSString*)deviceIdentifier
 {
+    // Reset state for new connection
+    _isDisconnected = false;
+    _isRunning = false;
+    
+    // Clear any pending signals on the semaphore by recreating it
+    // This ensures we don't immediately return stale status/frames
+    _frameAvailableSemaphore = dispatch_semaphore_create(0);
+    
     AVCaptureDevice* device = nil;
 
     if ([deviceIdentifier length] == 0)
@@ -241,6 +261,9 @@
     }
 
     dispatch_semaphore_signal(_frameSemaphore);
+    
+    // Wake up any waiters
+    dispatch_semaphore_signal(_frameAvailableSemaphore);
 
     fprintf(stderr, "Stopped streaming\n");
 }
@@ -300,6 +323,66 @@
     CFRetain(sampleBuffer);
 
     dispatch_semaphore_signal(_frameSemaphore);
+    
+    // Signal that a new frame is available
+    // We only signal if there's a waiter, but dispatch_semaphore keeps count.
+    // However, we don't want the count to grow indefinitely if no one is waiting.
+    // A semaphore isn't a condition variable. If we signal 100 times, the next 100 waits will pass immediately.
+    // Ideally we want "wait for *next* frame".
+    // But since we are consuming frames in a loop, this is acceptable if the loop is fast enough.
+    // To prevent buildup, we could try to wait with 0 timeout first? No.
+    // Standard approach: just signal. The consumer loop will consume them one by one.
+    // Given we have "alwaysDiscardsLateVideoFrames = YES", we shouldn't get too many backlogged.
+    dispatch_semaphore_signal(_frameAvailableSemaphore);
+}
+
+- (void)deviceDisconnected:(NSNotification *)notification
+{
+    if ([notification.name isEqualToString:AVCaptureDeviceWasDisconnectedNotification]) {
+        AVCaptureDevice *device = (AVCaptureDevice*)notification.object;
+        if (device == _deviceInput.device) {
+             std::cerr << "[WARNING] Camera disconnected!" << std::endl;
+             _isDisconnected = true;
+             _isRunning = false;
+             dispatch_semaphore_signal(_frameAvailableSemaphore);
+        }
+    } else if ([notification.name isEqualToString:AVCaptureSessionRuntimeErrorNotification]) {
+        AVCaptureSession *session = (AVCaptureSession*)notification.object;
+        if (session == _captureSession) {
+            NSError *error = notification.userInfo[AVCaptureSessionErrorKey];
+            const char* errStr = error ? [error.localizedDescription UTF8String] : "Unknown error";
+            std::cerr << "[ERROR] Capture session runtime error: " << errStr << std::endl;
+            _isDisconnected = true;
+            _isRunning = false;
+            dispatch_semaphore_signal(_frameAvailableSemaphore);
+        }
+    }
+}
+
+- (CMSampleBufferRef)waitForNewFrame:(double)timeoutSeconds
+{
+    if (_isDisconnected) return nil;
+    
+    // Wait for a new frame signal
+    dispatch_time_t timeout = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(timeoutSeconds * NSEC_PER_SEC));
+    long result = dispatch_semaphore_wait(_frameAvailableSemaphore, timeout);
+    
+    // Check disconnection again after wait (in case we were signaled due to disconnect)
+    if (_isDisconnected) return nil;
+    
+    if (result != 0)
+    {
+        // Timeout
+        return nil;
+    }
+    
+    // We got a signal, so a new frame should be in _latestBuffer
+    return [self getLatestFrame];
+}
+
+- (bool)isDisconnected
+{
+    return _isDisconnected;
 }
 
 + (std::string)findThermalCamera

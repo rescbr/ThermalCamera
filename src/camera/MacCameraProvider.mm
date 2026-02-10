@@ -98,10 +98,24 @@
     PROFILE_SCOPE("MacCameraProvider::getFrame");
     std::lock_guard<std::mutex> lock(_frameMutex);
 
-    CMSampleBufferRef sampleBuffer = [_streamer getLatestFrame];
+    if ([_streamer isDisconnected]) {
+        [NSException raise:@"DeviceDisconnectedException" format:@"Camera disconnected"];
+    }
+
+    // Block until a new frame is available (or timeout/shutdown)
+    // Using 2.0 second timeout to allow for slow startup or temporary hitches
+    // without spinning the CPU.
+    CMSampleBufferRef sampleBuffer = [_streamer waitForNewFrame:2.0];
+    
+    if ([_streamer isDisconnected]) {
+        [NSException raise:@"DeviceDisconnectedException" format:@"Camera disconnected"];
+    }
+
     if (!sampleBuffer)
     {
-        [NSException raise:@"NoFrameException" format:@"No sample buffer available"];
+        // This usually means timeout or streaming stopped
+        *bytesWritten = 0;
+        return; 
     }
 
     CVImageBufferRef imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);

@@ -38,6 +38,7 @@ struct SharedState
     std::atomic<bool> isRunning;
     std::atomic<bool> cameraConnected;
     std::atomic<bool> processingActive;
+    bool isAutoDetect;
 
     SharedState(size_t frameSize) 
         : rawBuffer(frameSize)
@@ -47,6 +48,7 @@ struct SharedState
         , isRunning(true)
         , cameraConnected(false)
         , processingActive(true)
+        , isAutoDetect(false)
     {
         // Pre-allocate thermal frames
         for(auto& frame : processedBuffer) {
@@ -152,14 +154,21 @@ int main(int argc, char** argv)
 
         if (devicePath.empty() && sharedState->config.GetInputFile().empty())
         {
+            sharedState->isAutoDetect = true;
             LOG_INFO("Auto-detecting thermal camera...");
             devicePath = Camera::FindThermalCamera();
             if (devicePath.empty()) {
-                LOG_ERROR("No thermal camera found");
-                return 1;
+                // Don't exit yet, retry in loop
+                LOG_WARN("No thermal camera found initially. Will retry.");
+            } else {
+                LOG_INFO(std::string("Found thermal camera at: ") + devicePath);
+                sharedState->config.SetDevicePath(devicePath);
             }
-            LOG_INFO(std::string("Found thermal camera at: ") + devicePath);
-            sharedState->config.SetDevicePath(devicePath);
+        }
+        else if (!devicePath.empty())
+        {
+            // User specified device
+            sharedState->isAutoDetect = false;
         }
 
         // Setup signal handling
@@ -235,58 +244,88 @@ int main(int argc, char** argv)
         });
 
         // 5. Launch Capture Thread (Task 4.3)
-        pool.push([sharedState, devicePath](size_t id, [[maybe_unused]] ThreadContext& ctx) {
+        pool.push([sharedState](size_t id, [[maybe_unused]] ThreadContext& ctx) {
             std::cerr << "Capture thread started (ID: " << id << ")\n";
             Camera camera;
             
-            try {
-                camera.Initialize(devicePath);
-                std::cerr << "Camera initialized: " << camera.GetCameraName() << "\n";
-                
-                // Set default settings
-                camera.SetBrightness(50);
-                camera.SetContrast(50);
-                camera.SetGamma(300); // 3.0
-                
-                camera.StartStreaming();
-                sharedState->cameraConnected = true;
-                
-                while (sharedState->isRunning) {
+            while (sharedState->isRunning) {
+                try {
+                    // 1. Connection Phase
+                    if (!sharedState->cameraConnected) {
+                        try {
+                            std::string path = sharedState->config.GetDevicePath();
+                            
+                            // Re-detect if auto-detect mode and no path (or retry)
+                            if (sharedState->isAutoDetect && path.empty()) {
+                                std::cerr << "Scanning for camera...\r";
+                                path = Camera::FindThermalCamera();
+                                if (!path.empty()) {
+                                    sharedState->config.SetDevicePath(path);
+                                    std::cerr << "\nFound camera: " << path << "\n";
+                                }
+                            }
+                            
+                            // Check again
+                            path = sharedState->config.GetDevicePath();
+                            if (path.empty()) {
+                                std::this_thread::sleep_for(std::chrono::seconds(1));
+                                continue;
+                            }
+
+                            camera.Initialize(path);
+                            std::cerr << "Camera initialized: " << camera.GetCameraName() << "\n";
+                            
+                            // Set default settings
+                            camera.SetBrightness(50);
+                            camera.SetContrast(50);
+                            camera.SetGamma(300); // 3.0
+                            
+                            camera.StartStreaming();
+                            sharedState->cameraConnected = true;
+                        } catch (const std::exception& e) {
+                            // Connection failed, wait and retry
+                            if (sharedState->isRunning) {
+                                // If auto-detect, clear the path to force re-scan next loop
+                                // This handles Location ID changes on macOS
+                                if (sharedState->isAutoDetect) {
+                                    sharedState->config.SetDevicePath("");
+                                }
+                                std::this_thread::sleep_for(std::chrono::seconds(1));
+                            }
+                            continue; 
+                        }
+                    }
+
+                    // 2. Streaming Phase
                     uint8_t* writeBuffer = sharedState->rawBuffer.GetWriteBuffer();
                     size_t frameSize = sharedState->rawBuffer.GetFrameSize();
+                    size_t bytesWritten = 0;
                     
-                    try {
-                        size_t bytesWritten = 0;
-                        camera.GetFrame(writeBuffer, frameSize, bytesWritten);
+                    // Blocks until new frame or timeout
+                    camera.GetFrame(writeBuffer, frameSize, bytesWritten);
 
-                        if (bytesWritten == frameSize) {
-                            sharedState->rawBuffer.SwapBuffers();
-                        } else {
-                             std::cerr << "Warning: Frame size mismatch (" << bytesWritten << " vs " << frameSize << ")\n";
-                        }
-                    } catch (const std::exception& e) {
-                        // Camera might be disconnected or frame not ready
-                        // Small sleep to avoid busy loop if camera fails
-                        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                    if (bytesWritten == frameSize) {
+                        sharedState->rawBuffer.SwapBuffers();
+                    } else if (bytesWritten == 0) {
+                         // Timeout - just loop again
+                    } else {
+                         std::cerr << "Warning: Frame size mismatch (" << bytesWritten << " vs " << frameSize << ")\n";
                     }
+
+                } catch (const std::exception& e) {
+                    std::cerr << "Capture error: " << e.what() << "\n";
+                    sharedState->cameraConnected = false;
+                    try { camera.StopStreaming(); } catch(...) {}
                     
-                    // Simple throttling if needed, but Camera usually blocks or waits for frame?
-                    // libuvc callback based, but GetFrame is polling latest.
-                    // If we poll faster than FPS, we might get same frame?
-                    // UvcCameraProvider implementation copies latest frame on callback.
-                    // So GetFrame just returns the last received frame.
-                    // We should only swap if it's a *new* frame.
-                    // The current implementation of Camera doesn't indicate if it's new.
-                    // We might be processing the same frame multiple times.
-                    // TODO: Add "New Frame" flag in Camera class in future.
-                    // For now, we just run at max speed or throttle.
-                    std::this_thread::sleep_for(std::chrono::milliseconds(10)); // ~100 FPS poll rate
+                    // Wait before retrying
+                    if (sharedState->isRunning) {
+                        // If auto-detect, clear the path to force re-scan next loop
+                        if (sharedState->isAutoDetect) {
+                            sharedState->config.SetDevicePath("");
+                        }
+                        std::this_thread::sleep_for(std::chrono::seconds(1));
+                    }
                 }
-                
-                camera.StopStreaming();
-            } catch (const std::exception& e) {
-                std::cerr << "Capture error: " << e.what() << "\n";
-                sharedState->isRunning = false; // Stop app on camera failure
             }
             std::cerr << "Capture thread stopped\n";
         });

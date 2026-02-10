@@ -189,14 +189,66 @@ namespace Render
 
         // Step 4: Render texture to screen
         SDL_RenderClear(_renderer);
-        // Copy texture to entire renderer target (automatically handles scaling if fullscreen)
-        SDL_RenderCopy(_renderer, _texture, nullptr, nullptr);
+        
+        // Calculate letterbox/pillarbox viewport
+        int winW, winH;
+        SDL_GetRendererOutputSize(_renderer, &winW, &winH);
+        
+        float scaleX = (float)winW / targetW;
+        float scaleY = (float)winH / targetH;
+        float minScale = (scaleX < scaleY) ? scaleX : scaleY;
+        
+        int viewW = (int)(targetW * minScale);
+        int viewH = (int)(targetH * minScale);
+        
+        SDL_Rect viewportRect;
+        viewportRect.x = (winW - viewW) / 2;
+        viewportRect.y = (winH - viewH) / 2;
+        viewportRect.w = viewW;
+        viewportRect.h = viewH;
+        
+        // Set Viewport and Scale to map Logical (targetW x targetH) -> Screen (viewportRect)
+        SDL_RenderSetViewport(_renderer, &viewportRect);
+        
+        // Render texture to fit the viewport
+        // SDL_RenderCopy destination defaults to viewport size if NULL
+        // But since we want to draw in Logical coordinates if we use SetScale,
+        // let's just use Copy first (it ignores SetScale for destination usually? No, it respects it).
+        // Actually, easiest way: 
+        // 1. Set Viewport (handles translation and clipping)
+        // 2. Set Scale (handles scaling)
+        // 3. Draw everything in Logical Coordinates (0..targetW)
+        
+        SDL_RenderSetScale(_renderer, minScale, minScale);
+        
+        // We draw the texture to fill the Logical Space
+        SDL_Rect logicalRect = {0, 0, targetW, targetH};
+        SDL_RenderCopy(_renderer, _texture, nullptr, &logicalRect);
         
         // Step 5: Render HUD
         if (_showHud) {
             PROFILE_SCOPE("RenderHUD");
+            
+            // Transform mouse coordinates to Logical Space for the HUD
+            int realMouseX = _mouseX;
+            int realMouseY = _mouseY;
+            
+            if (minScale > 0) {
+                // Map Screen -> Viewport-Relative -> Logical
+                _mouseX = (int)((realMouseX - viewportRect.x) / minScale);
+                _mouseY = (int)((realMouseY - viewportRect.y) / minScale);
+            }
+
             RenderHUD(frame);
+            
+            // Restore mouse coordinates
+            _mouseX = realMouseX;
+            _mouseY = realMouseY;
         }
+
+        // Restore Renderer State for next frame / other operations
+        SDL_RenderSetScale(_renderer, 1.0f, 1.0f);
+        SDL_RenderSetViewport(_renderer, nullptr);
 
         SDL_RenderPresent(_renderer);
         
