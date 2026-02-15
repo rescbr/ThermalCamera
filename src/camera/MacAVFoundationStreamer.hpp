@@ -7,6 +7,7 @@
 
 #include <string>
 #include <mutex>
+#include <condition_variable>
 
 @interface MacAVFoundationStreamer : NSObject <AVCaptureVideoDataOutputSampleBufferDelegate>
 {
@@ -14,9 +15,9 @@
     AVCaptureDeviceInput* _deviceInput;
     AVCaptureVideoDataOutput* _videoOutput;
     dispatch_queue_t _captureQueue;
-    dispatch_semaphore_t _frameSemaphore; // Mutex for _latestBuffer access
-    dispatch_semaphore_t _frameAvailableSemaphore; // Signal for new frame arrival
     std::mutex _frameMutex;
+    std::condition_variable _frameCV;
+    bool _newFrameReceived;
     CMSampleBufferRef _latestBuffer;
     bool _isRunning;
     bool _isDisconnected;

@@ -55,9 +55,10 @@
         _deviceInput = nil;
         _videoOutput = nil;
         _captureQueue = dispatch_queue_create("com.thermalcamera.capture", DISPATCH_QUEUE_SERIAL);
-        _frameSemaphore = dispatch_semaphore_create(1);
-        _frameAvailableSemaphore = dispatch_semaphore_create(0);
+        // _frameSemaphore replaced by _frameMutex
+        // _frameAvailableSemaphore replaced by _frameCV
         _latestBuffer = nil;
+        _newFrameReceived = false;
     if (_videoOutput)
     {
         [_videoOutput setSampleBufferDelegate:nil queue:NULL];
@@ -90,9 +91,14 @@
     _isDisconnected = false;
     _isRunning = false;
     
-    // Clear any pending signals on the semaphore by recreating it
-    // This ensures we don't immediately return stale status/frames
-    _frameAvailableSemaphore = dispatch_semaphore_create(0);
+    {
+        std::lock_guard<std::mutex> lock(_frameMutex);
+        _newFrameReceived = false;
+        if (_latestBuffer) {
+            CFRelease(_latestBuffer);
+            _latestBuffer = nil;
+        }
+    }
     
     AVCaptureDevice* device = nil;
 
@@ -140,6 +146,7 @@
     }
 
     NSError* error = nil;
+
     @try {
         _deviceInput = [[AVCaptureDeviceInput alloc] initWithDevice:device error:&error];
     }
@@ -174,7 +181,7 @@
 
         _videoOutput = [[AVCaptureVideoDataOutput alloc] init];
         _videoOutput.videoSettings = @{
-            (NSString*)kCVPixelBufferPixelFormatTypeKey : @(kCVPixelFormatType_422YpCbCr8)
+            (NSString*)kCVPixelBufferPixelFormatTypeKey : @(kCVPixelFormatType_422YpCbCr8_yuvs)
         };
         _videoOutput.alwaysDiscardsLateVideoFrames = YES;
 
@@ -197,6 +204,55 @@
             if (connection.isVideoMirroringSupported)
             {
                 connection.videoMirrored = NO;
+            }
+            
+            // Try to disable via KVC on the connection (undocumented but reported to work for VCP)
+            if (@available(macOS 14.0, *))
+            {
+                 @try {
+                    // Check for "videoEffects" property on connection
+                    if ([connection respondsToSelector:@selector(setVideoEffects:)]) {
+                         [connection setValue:@[] forKey:@"videoEffects"];
+                    }
+                 } @catch (NSException *e) {
+                     // Ignore KVC errors
+                 }
+            }
+        }
+
+        // Disable macOS 14.0+ Reaction Effects (Gestures) to save CPU
+        if (@available(macOS 14.0, *))
+        {
+            if ([device respondsToSelector:@selector(setReactionEffectGesturesEnabled:)])
+            {
+                NSError* lockError = nil;
+                if ([device lockForConfiguration:&lockError])
+                {
+                    // Log current state
+                    BOOL current = NO;
+                    @try { current = [[device valueForKey:@"reactionEffectGesturesEnabled"] boolValue]; } @catch(id e) {}
+                    
+                    if (current) std::cerr << "[INFO] Reaction Effects enabled before: YES" << std::endl;
+                    
+                    [device setValue:@NO forKey:@"reactionEffectGesturesEnabled"];
+                    
+                    // Verify
+                    BOOL after = NO;
+                    @try { after = [[device valueForKey:@"reactionEffectGesturesEnabled"] boolValue]; } @catch(id e) {}
+                    
+                    if (current && !after) {
+                        std::cerr << "[INFO] Successfully disabled macOS Reaction Effects" << std::endl;
+                    } else if (current && after) {
+                         std::cerr << "[WARNING] Failed to disable macOS Reaction Effects (value didn't change)" << std::endl;
+                    }
+                    
+                    [device unlockForConfiguration];
+                }
+                else
+                {
+                    std::cerr << "[WARNING] Failed to lock device to disable Reaction Effects: "
+                              << [lockError.localizedDescription UTF8String] << std::endl;
+                }
             }
         }
         
@@ -222,6 +278,26 @@
         [_captureSession startRunning];
         _isRunning = true;
         std::cerr << "[INFO] Started streaming successfully" << std::endl;
+
+        // Re-apply Reaction Effects disable after startRunning
+        if (@available(macOS 14.0, *))
+        {
+            AVCaptureDevice* device = _deviceInput.device;
+            if (device && [device respondsToSelector:@selector(setReactionEffectGesturesEnabled:)])
+            {
+                 NSError* lockError = nil;
+                 if ([device lockForConfiguration:&lockError])
+                 {
+                     BOOL current = [[device valueForKey:@"reactionEffectGesturesEnabled"] boolValue];
+                     if (current)
+                     {
+                         [device setValue:@NO forKey:@"reactionEffectGesturesEnabled"];
+                         std::cerr << "[INFO] Re-disabled macOS Reaction Effects after start" << std::endl;
+                     }
+                     [device unlockForConfiguration];
+                 }
+            }
+        }
     }
     @catch (NSException *exception) {
         std::cerr << "[ERROR] " << __FILE__ << ":" << __LINE__
@@ -252,25 +328,24 @@
                   << " - Exception stopping session: " << [exception.reason UTF8String] << std::endl;
     }
 
-    dispatch_semaphore_wait(_frameSemaphore, DISPATCH_TIME_FOREVER);
-
-    if (_latestBuffer)
     {
-        CFRelease(_latestBuffer);
-        _latestBuffer = nil;
+        std::lock_guard<std::mutex> lock(_frameMutex);
+        if (_latestBuffer)
+        {
+            CFRelease(_latestBuffer);
+            _latestBuffer = nil;
+        }
     }
 
-    dispatch_semaphore_signal(_frameSemaphore);
-    
     // Wake up any waiters
-    dispatch_semaphore_signal(_frameAvailableSemaphore);
+    _frameCV.notify_all();
 
     fprintf(stderr, "Stopped streaming\n");
 }
 
 - (CMSampleBufferRef)getLatestFrame
 {
-    dispatch_semaphore_wait(_frameSemaphore, DISPATCH_TIME_FOREVER);
+    std::lock_guard<std::mutex> lock(_frameMutex);
     CMSampleBufferRef buffer = _latestBuffer;
 
     if (buffer)
@@ -278,7 +353,6 @@
         CFRetain(buffer);
     }
 
-    dispatch_semaphore_signal(_frameSemaphore);
     return buffer;
 }
 
@@ -312,7 +386,7 @@
     didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
     fromConnection:(AVCaptureConnection*)connection
 {
-    dispatch_semaphore_wait(_frameSemaphore, DISPATCH_TIME_FOREVER);
+    std::lock_guard<std::mutex> lock(_frameMutex);
 
     if (_latestBuffer)
     {
@@ -322,18 +396,8 @@
     _latestBuffer = sampleBuffer;
     CFRetain(sampleBuffer);
 
-    dispatch_semaphore_signal(_frameSemaphore);
-    
-    // Signal that a new frame is available
-    // We only signal if there's a waiter, but dispatch_semaphore keeps count.
-    // However, we don't want the count to grow indefinitely if no one is waiting.
-    // A semaphore isn't a condition variable. If we signal 100 times, the next 100 waits will pass immediately.
-    // Ideally we want "wait for *next* frame".
-    // But since we are consuming frames in a loop, this is acceptable if the loop is fast enough.
-    // To prevent buildup, we could try to wait with 0 timeout first? No.
-    // Standard approach: just signal. The consumer loop will consume them one by one.
-    // Given we have "alwaysDiscardsLateVideoFrames = YES", we shouldn't get too many backlogged.
-    dispatch_semaphore_signal(_frameAvailableSemaphore);
+    _newFrameReceived = true;
+    _frameCV.notify_one();
 }
 
 - (void)deviceDisconnected:(NSNotification *)notification
@@ -342,9 +406,12 @@
         AVCaptureDevice *device = (AVCaptureDevice*)notification.object;
         if (device == _deviceInput.device) {
              std::cerr << "[WARNING] Camera disconnected!" << std::endl;
-             _isDisconnected = true;
-             _isRunning = false;
-             dispatch_semaphore_signal(_frameAvailableSemaphore);
+             {
+                 std::lock_guard<std::mutex> lock(_frameMutex);
+                 _isDisconnected = true;
+                 _isRunning = false;
+             }
+             _frameCV.notify_all();
         }
     } else if ([notification.name isEqualToString:AVCaptureSessionRuntimeErrorNotification]) {
         AVCaptureSession *session = (AVCaptureSession*)notification.object;
@@ -352,32 +419,33 @@
             NSError *error = notification.userInfo[AVCaptureSessionErrorKey];
             const char* errStr = error ? [error.localizedDescription UTF8String] : "Unknown error";
             std::cerr << "[ERROR] Capture session runtime error: " << errStr << std::endl;
-            _isDisconnected = true;
-            _isRunning = false;
-            dispatch_semaphore_signal(_frameAvailableSemaphore);
+            {
+                std::lock_guard<std::mutex> lock(_frameMutex);
+                _isDisconnected = true;
+                _isRunning = false;
+            }
+            _frameCV.notify_all();
         }
     }
 }
 
 - (CMSampleBufferRef)waitForNewFrame:(double)timeoutSeconds
 {
+    std::unique_lock<std::mutex> lock(_frameMutex);
+
     if (_isDisconnected) return nil;
-    
-    // Wait for a new frame signal
-    dispatch_time_t timeout = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(timeoutSeconds * NSEC_PER_SEC));
-    long result = dispatch_semaphore_wait(_frameAvailableSemaphore, timeout);
-    
-    // Check disconnection again after wait (in case we were signaled due to disconnect)
-    if (_isDisconnected) return nil;
-    
-    if (result != 0)
+
+    // Wait for new frame
+    if (_frameCV.wait_for(lock, std::chrono::duration<double>(timeoutSeconds), [self]{ return _newFrameReceived || !_isRunning || _isDisconnected; }))
     {
-        // Timeout
-        return nil;
+        if (_isDisconnected || !_isRunning) return nil;
+        _newFrameReceived = false;
+        CMSampleBufferRef buffer = _latestBuffer;
+        if (buffer) CFRetain(buffer);
+        return buffer;
     }
     
-    // We got a signal, so a new frame should be in _latestBuffer
-    return [self getLatestFrame];
+    return nil;
 }
 
 - (bool)isDisconnected

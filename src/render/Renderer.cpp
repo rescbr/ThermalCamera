@@ -37,6 +37,7 @@ namespace Render
         , _window(nullptr)
         , _renderer(nullptr)
         , _texture(nullptr)
+        , _fontTexture(nullptr)
         , _windowWidth(0)
         , _isRunning(false)
         , _showHud(true)
@@ -59,6 +60,12 @@ namespace Render
         {
             SDL_DestroyTexture(_texture);
             _texture = nullptr;
+        }
+
+        if (_fontTexture)
+        {
+            SDL_DestroyTexture(_fontTexture);
+            _fontTexture = nullptr;
         }
 
         if (_renderer)
@@ -90,34 +97,30 @@ namespace Render
         int targetW = frame._width * scale;
         int targetH = frame._height * scale;
 
-        // Check if texture needs recreation
+        // Check if texture needs recreation (source size changed)
         bool recreateTexture = false;
         if (!_texture) {
             recreateTexture = true;
         } else {
             int texW, texH;
             SDL_QueryTexture(_texture, nullptr, nullptr, &texW, &texH);
-            if (texW != targetW || texH != targetH) {
+            if (texW != frame._width || texH != frame._height) {
                 recreateTexture = true;
             }
         }
 
         if (recreateTexture) {
             if (_texture) SDL_DestroyTexture(_texture);
+            // Create texture at source resolution
             _texture = SDL_CreateTexture(_renderer, SDL_PIXELFORMAT_ARGB8888, 
                                          SDL_TEXTUREACCESS_STREAMING, 
-                                         targetW, targetH);
+                                         frame._width, frame._height);
             if (!_texture) {
                 std::cerr << "Failed to create texture: " << SDL_GetError() << std::endl;
                 return false;
             }
-            try {
-                _scaledBuffer.resize(targetW * targetH);
-            } catch (...) {
-                return false;
-            }
             
-            // If not fullscreen, resize window to match
+            // If not fullscreen, resize window to match target size
             if (!_config.GetFullscreen()) {
                 SDL_SetWindowSize(_window, targetW, targetH);
             }
@@ -132,32 +135,20 @@ namespace Render
                 // Restore size if exiting fullscreen
                 SDL_SetWindowSize(_window, targetW, targetH);
             }
+        } else if (!_config.GetFullscreen()) {
+            // Ensure window size matches scale factor if not fullscreen
+            // (In case user resized window manually or scale changed)
+            int w, h;
+            SDL_GetWindowSize(_window, &w, &h);
+            if (w != targetW || h != targetH) {
+                SDL_SetWindowSize(_window, targetW, targetH);
+            }
         }
 
 
         // --- Rendering Steps ---
 
-        // Step 1: Apply colormap to thermal data
-        // Writes to _pixelBuffer (Source Size)
-        // Ensure pixel buffer is large enough
-        if (_pixelBuffer.size() < frame._data.size()) {
-            _pixelBuffer.resize(frame._data.size());
-        }
-        {
-            PROFILE_SCOPE("ApplyColormap");
-            ApplyColormap(frame, _pixelBuffer.data());
-        }
-
-        // Step 2: Scale to display size (CPU Scaling)
-        // Reads from _pixelBuffer, writes to _scaledBuffer (Target Size)
-        {
-            PROFILE_SCOPE("ScaleFrame");
-            ScaleFrame(_pixelBuffer.data(), _scaledBuffer.data(),
-                       frame._width, frame._height,
-                       targetW, targetH);
-        }
-
-        // Step 3: Update SDL texture
+        // Step 1: Lock Texture to write pixels directly
         void* pixels;
         int pitch;
         if (SDL_LockTexture(_texture, nullptr, &pixels, &pitch) != 0)
@@ -166,40 +157,27 @@ namespace Render
              return false;
         }
 
-        // Copy scaled buffer to texture
-        // Assuming texture width matches scaled width (targetW)
-        if (pitch == targetW * 4)
+        // Step 2: Apply colormap to texture memory
         {
-            std::memcpy(pixels, _scaledBuffer.data(), _scaledBuffer.size() * sizeof(uint32_t));
-        }
-        else
-        {
-            // Row-by-row copy
-            uint8_t* dst = static_cast<uint8_t*>(pixels);
-            const uint32_t* src = _scaledBuffer.data();
-            for (int i = 0; i < targetH; ++i)
-            {
-                std::memcpy(dst, src, targetW * sizeof(uint32_t));
-                dst += pitch;
-                src += targetW;
-            }
+            PROFILE_SCOPE("ApplyColormap");
+            ApplyColormap(frame, pixels, pitch);
         }
 
         SDL_UnlockTexture(_texture);
 
-        // Step 4: Render texture to screen
+        // Step 3: Render texture to screen (GPU Scaling)
         SDL_RenderClear(_renderer);
         
         // Calculate letterbox/pillarbox viewport
         int winW, winH;
         SDL_GetRendererOutputSize(_renderer, &winW, &winH);
         
-        float scaleX = (float)winW / targetW;
-        float scaleY = (float)winH / targetH;
+        float scaleX = (float)winW / frame._width;
+        float scaleY = (float)winH / frame._height;
         float minScale = (scaleX < scaleY) ? scaleX : scaleY;
         
-        int viewW = (int)(targetW * minScale);
-        int viewH = (int)(targetH * minScale);
+        int viewW = (int)(frame._width * minScale);
+        int viewH = (int)(frame._height * minScale);
         
         SDL_Rect viewportRect;
         viewportRect.x = (winW - viewW) / 2;
@@ -207,25 +185,10 @@ namespace Render
         viewportRect.w = viewW;
         viewportRect.h = viewH;
         
-        // Set Viewport and Scale to map Logical (targetW x targetH) -> Screen (viewportRect)
-        SDL_RenderSetViewport(_renderer, &viewportRect);
-        
         // Render texture to fit the viewport
-        // SDL_RenderCopy destination defaults to viewport size if NULL
-        // But since we want to draw in Logical coordinates if we use SetScale,
-        // let's just use Copy first (it ignores SetScale for destination usually? No, it respects it).
-        // Actually, easiest way: 
-        // 1. Set Viewport (handles translation and clipping)
-        // 2. Set Scale (handles scaling)
-        // 3. Draw everything in Logical Coordinates (0..targetW)
+        SDL_RenderCopy(_renderer, _texture, nullptr, &viewportRect);
         
-        SDL_RenderSetScale(_renderer, minScale, minScale);
-        
-        // We draw the texture to fill the Logical Space
-        SDL_Rect logicalRect = {0, 0, targetW, targetH};
-        SDL_RenderCopy(_renderer, _texture, nullptr, &logicalRect);
-        
-        // Step 5: Render HUD
+        // Step 4: Render HUD
         if (_showHud) {
             PROFILE_SCOPE("RenderHUD");
             
@@ -279,9 +242,9 @@ namespace Render
         return true;
     }
     
-    void Renderer::ApplyColormap(const Thermal::ThermalFrame& frame, uint32_t* outputBuffer)
+    void Renderer::ApplyColormap(const Thermal::ThermalFrame& frame, void* pixels, int pitch)
     {
-        if (frame._data.empty() || !outputBuffer) return;
+        if (frame._data.empty() || !pixels) return;
 
         uint16_t minK = frame._min._kelvin;
         uint16_t maxK = frame._max._kelvin;
@@ -295,81 +258,57 @@ namespace Render
         if (cmapIdx < 0) cmapIdx = 0;
         const uint32_t* palette = _packedColormaps[cmapIdx % COLORMAP_COUNT].data();
 
-        const size_t pixelCount = frame._data.size();
         const uint16_t* input = frame._data.data();
-
-        // Process pixels
-        for (size_t i = 0; i < pixelCount; ++i)
-        {
-            uint16_t val = input[i];
-
-            // Clamp value
-            if (val < minK) val = minK;
-            if (val > maxK) val = maxK;
-
-            // Map to 0-255 using integer math
-            uint32_t delta = val - minK;
-            int index = (delta * 255) / range;
-            if (index < 0) index = 0;
-            if (index > 255) index = 255;
-
-            // Direct lookup from pre-packed ARGB palette
-            outputBuffer[i] = palette[index];
-        }
-    }
-    
-    void Renderer::ScaleFrame(const uint32_t* sourceBuffer, uint32_t* destBuffer, int srcWidth, int srcHeight, int destWidth, int destHeight)
-    {
-        // Simple Bilinear Interpolation
-        if (!sourceBuffer || !destBuffer) return;
+        int width = frame._width;
+        int height = frame._height;
         
-        if (srcWidth == destWidth && srcHeight == destHeight)
+        // Fast path for pitch == width * 4 (Contiguous)
+        if (pitch == width * 4)
         {
-            std::memcpy(destBuffer, sourceBuffer, srcWidth * srcHeight * sizeof(uint32_t));
-            return;
-        }
+            uint32_t* outputBuffer = static_cast<uint32_t*>(pixels);
+            const size_t pixelCount = width * height;
 
-        const float xRatio = static_cast<float>(srcWidth - 1) / destWidth;
-        const float yRatio = static_cast<float>(srcHeight - 1) / destHeight;
-        
-        for (int y = 0; y < destHeight; ++y)
-        {
-            float srcY = y * yRatio;
-            int y0 = static_cast<int>(srcY);
-            int y1 = (y0 < srcHeight - 1) ? y0 + 1 : y0;
-            float yDiff = srcY - y0;
-            float yInv = 1.0f - yDiff;
-            
-            for (int x = 0; x < destWidth; ++x)
+            for (size_t i = 0; i < pixelCount; ++i)
             {
-                float srcX = x * xRatio;
-                int x0 = static_cast<int>(srcX);
-                int x1 = (x0 < srcWidth - 1) ? x0 + 1 : x0;
-                float xDiff = srcX - x0;
-                float xInv = 1.0f - xDiff;
-                
-                uint32_t p00 = sourceBuffer[y0 * srcWidth + x0];
-                uint32_t p10 = sourceBuffer[y0 * srcWidth + x1];
-                uint32_t p01 = sourceBuffer[y1 * srcWidth + x0];
-                uint32_t p11 = sourceBuffer[y1 * srcWidth + x1];
-                
-                float b = ((p00 & 0xFF) * xInv + (p10 & 0xFF) * xDiff) * yInv +
-                          ((p01 & 0xFF) * xInv + (p11 & 0xFF) * xDiff) * yDiff;
-                
-                float g = (((p00 >> 8) & 0xFF) * xInv + ((p10 >> 8) & 0xFF) * xDiff) * yInv +
-                          (((p01 >> 8) & 0xFF) * xInv + ((p11 >> 8) & 0xFF) * xDiff) * yDiff;
+                uint16_t val = input[i];
 
-                float r = (((p00 >> 16) & 0xFF) * xInv + ((p10 >> 16) & 0xFF) * xDiff) * yInv +
-                          (((p01 >> 16) & 0xFF) * xInv + ((p11 >> 16) & 0xFF) * xDiff) * yDiff;
-                          
-                destBuffer[y * destWidth + x] = (255 << 24) | 
-                                                (static_cast<uint8_t>(r) << 16) | 
-                                                (static_cast<uint8_t>(g) << 8) | 
-                                                static_cast<uint8_t>(b);
+                if (val < minK) val = minK;
+                if (val > maxK) val = maxK;
+
+                // Map to 0-255 using integer math
+                uint32_t delta = val - minK;
+                int index = (delta * 255) / range;
+                if (index < 0) index = 0;
+                if (index > 255) index = 255;
+
+                // Direct lookup from pre-packed ARGB palette
+                outputBuffer[i] = palette[index];
+            }
+        }
+        else
+        {
+            // Slow path (Row-by-row)
+            uint8_t* rowPtr = static_cast<uint8_t*>(pixels);
+            for (int y = 0; y < height; ++y)
+            {
+                uint32_t* outputBuffer = reinterpret_cast<uint32_t*>(rowPtr);
+                for (int x = 0; x < width; ++x)
+                {
+                    uint16_t val = input[y * width + x];
+                    if (val < minK) val = minK;
+                    if (val > maxK) val = maxK;
+                    
+                    uint32_t delta = val - minK;
+                    int index = (delta * 255) / range;
+                    if (index < 0) index = 0;
+                    if (index > 255) index = 255;
+                    outputBuffer[x] = palette[index];
+                }
+                rowPtr += pitch;
             }
         }
     }
-
+    
     void Renderer::InitializeColormaps()
     {
         _packedColormaps.clear();
@@ -390,37 +329,127 @@ namespace Render
         }
     }
 
+    void Renderer::InitializeFont()
+    {
+        // EspySans 10pt is a bitmap font.
+        // We will create a texture atlas where all glyphs are laid out horizontally.
+        // There are 256 glyphs. Max width is 13, max height is 13.
+        // Let's allocate a surface wide enough for all 256 chars.
+        
+        int totalWidth = 0;
+        int maxHeight = 0;
+        
+        _glyphRects.resize(256);
+        
+        // First pass: calculate dimensions
+        for (int i = 0; i < 256; ++i)
+        {
+            const auto& glyph = Fonts::EspySans_10::glyphs[i];
+            if (!glyph.bitmap) {
+                // For non-renderable chars (like space), we still need an advance but no bitmap
+                // For space (0x20), advance is 3.
+                _glyphRects[i] = { totalWidth, 0, 0, 0 }; // No texture rect
+                continue;
+            }
+            
+            _glyphRects[i].x = totalWidth;
+            _glyphRects[i].y = 0;
+            _glyphRects[i].w = glyph.width;
+            _glyphRects[i].h = glyph.height;
+            
+            totalWidth += glyph.width + 1; // +1 for padding
+            if (glyph.height > maxHeight) maxHeight = glyph.height;
+        }
+        
+        if (totalWidth == 0) return; // Should not happen
+        
+        // Create surface
+        // Use ARGB8888 for simplicity
+        SDL_Surface* surface = SDL_CreateRGBSurfaceWithFormat(0, totalWidth, maxHeight, 32, SDL_PIXELFORMAT_ARGB8888);
+        if (!surface)
+        {
+             std::cerr << "Failed to create font surface: " << SDL_GetError() << std::endl;
+             return;
+        }
+        
+        // Clear to transparent
+        std::memset(surface->pixels, 0, surface->pitch * surface->h);
+        
+        uint32_t* pixels = (uint32_t*)surface->pixels;
+        int pitch = surface->pitch / 4; // in uint32 pixels
+        
+        // Second pass: Draw glyphs to surface
+        for (int i = 0; i < 256; ++i)
+        {
+            const auto& glyph = Fonts::EspySans_10::glyphs[i];
+            if (!glyph.bitmap) continue;
+            
+            const SDL_Rect& rect = _glyphRects[i];
+            
+            // Draw bitmap
+            int bytesPerRow = (glyph.width + 7) / 8;
+            
+            for (int r = 0; r < glyph.height; ++r) {
+                for (int c = 0; c < glyph.width; ++c) {
+                    int byteIndex = r * bytesPerRow + (c / 8);
+                    int bitIndex = 7 - (c % 8); 
+                    
+                    if (glyph.bitmap[byteIndex] & (1 << bitIndex)) {
+                        // Set pixel to white (we will color modulate the texture)
+                        // ARGB: Full Alpha, Full White
+                        int surfX = rect.x + c;
+                        int surfY = rect.y + r;
+                        pixels[surfY * pitch + surfX] = 0xFFFFFFFF;
+                    }
+                }
+            }
+        }
+        
+        // Create texture
+        _fontTexture = SDL_CreateTextureFromSurface(_renderer, surface);
+        SDL_FreeSurface(surface);
+        
+        if (!_fontTexture) {
+             std::cerr << "Failed to create font texture: " << SDL_GetError() << std::endl;
+             return;
+        }
+        
+        // Set blend mode to blend so alpha works
+        SDL_SetTextureBlendMode(_fontTexture, SDL_BLENDMODE_BLEND);
+    }
+
     void Renderer::DrawText(const std::string& text, int x, int y, uint32_t color)
     {
-        int pen_x = x;
-        int pen_y = y;
+        if (!_fontTexture) return;
         
+        // Set texture color modulation
         uint8_t a = (color >> 24) & 0xFF;
         uint8_t r = (color >> 16) & 0xFF;
         uint8_t g = (color >> 8) & 0xFF;
         uint8_t b = (color & 0xFF);
         
-        SDL_SetRenderDrawColor(_renderer, r, g, b, a);
+        SDL_SetTextureColorMod(_fontTexture, r, g, b);
+        SDL_SetTextureAlphaMod(_fontTexture, a);
+        
+        int pen_x = x;
+        int pen_y = y;
         
         for (char c : text) {
-            const auto& glyph = Fonts::EspySans_10::glyphs[static_cast<uint8_t>(c)];
-            if (!glyph.bitmap) continue;
+            uint8_t idx = static_cast<uint8_t>(c);
+            const auto& glyph = Fonts::EspySans_10::glyphs[idx];
             
-            int draw_x = pen_x + glyph.x_offset;
-            int draw_y = pen_y - (glyph.y_offset + glyph.height);
-            
-            int bytesPerRow = (glyph.width + 7) / 8;
-            
-            for (int row = 0; row < glyph.height; ++row) {
-                for (int col = 0; col < glyph.width; ++col) {
-                    int byteIndex = row * bytesPerRow + (col / 8);
-                    int bitIndex = 7 - (col % 8); 
-                    
-                    if (glyph.bitmap[byteIndex] & (1 << bitIndex)) {
-                        SDL_RenderDrawPoint(_renderer, draw_x + col, draw_y + row);
-                    }
-                }
+            if (glyph.bitmap) {
+                const SDL_Rect& srcRect = _glyphRects[idx];
+                
+                SDL_Rect dstRect;
+                dstRect.x = pen_x + glyph.x_offset;
+                dstRect.y = pen_y - (glyph.y_offset + glyph.height);
+                dstRect.w = srcRect.w;
+                dstRect.h = srcRect.h;
+                
+                SDL_RenderCopy(_renderer, _fontTexture, &srcRect, &dstRect);
             }
+            
             pen_x += glyph.advance;
         }
     }
@@ -440,30 +469,23 @@ namespace Render
         SDL_RenderDrawLine(_renderer, centerX, centerY - size, centerX, centerY + size);
         
         bool useCelsius = _config.GetUseCelsius();
-        auto formatTemp = [useCelsius](float c, float f) {
-            std::stringstream ss;
-            ss << std::fixed << std::setprecision(1);
-            if (useCelsius) ss << c << "C";
-            else ss << f << "F";
-            return ss.str();
+        
+        char buffer[32];
+        auto formatTemp = [useCelsius, &buffer](float c, float f) -> const char* {
+             if (useCelsius) snprintf(buffer, sizeof(buffer), "%.1fC", c);
+             else snprintf(buffer, sizeof(buffer), "%.1fF", f);
+             return buffer;
         };
 
         // Top Left: FPS and Temps
-        std::stringstream ssLeft;
-        ssLeft << "FPS: " << _currentFPS;
-        DrawText(ssLeft.str(), 10, 20, 0xFFFFFFFF);
+        snprintf(buffer, sizeof(buffer), "FPS: %d", _currentFPS);
+        DrawText(buffer, 10, 20, 0xFFFFFFFF);
         
-        ssLeft.str("");
-        ssLeft << "Min: " << formatTemp(frame._min._celsius, frame._min._fahrenheit);
-        DrawText(ssLeft.str(), 10, 35, 0xFF00FFFF); // Cyan
+        DrawText(std::string("Min: ") + formatTemp(frame._min._celsius, frame._min._fahrenheit), 10, 35, 0xFF00FFFF); // Cyan
 
-        ssLeft.str("");
-        ssLeft << "Max: " << formatTemp(frame._max._celsius, frame._max._fahrenheit);
-        DrawText(ssLeft.str(), 10, 50, 0xFFFF0000); // Red
+        DrawText(std::string("Max: ") + formatTemp(frame._max._celsius, frame._max._fahrenheit), 10, 50, 0xFFFF0000); // Red
 
-        ssLeft.str("");
-        ssLeft << "Avg: " << formatTemp(frame._avg._celsius, frame._avg._fahrenheit);
-        DrawText(ssLeft.str(), 10, 65, 0xFF00FF00); // Green
+        DrawText(std::string("Avg: ") + formatTemp(frame._avg._celsius, frame._avg._fahrenheit), 10, 65, 0xFF00FF00); // Green
         
         // Top Right: Colormap & Scale
         int rightX = width - 120;
@@ -471,15 +493,15 @@ namespace Render
         if (cmapIdx < 0) cmapIdx = 0;
         DrawText(AVAILABLE_COLORMAPS[cmapIdx % COLORMAP_COUNT].name, rightX, 20);
         
-        std::stringstream ssRight;
-        ssRight << "Scale: " << scale << "X";
-        DrawText(ssRight.str(), rightX, 35);
+        snprintf(buffer, sizeof(buffer), "Scale: %dX", scale);
+        DrawText(buffer, rightX, 35);
         
         if (_config.GetFreezeFrame()) {
              DrawText("[FROZEN]", rightX, 50, 0xFF00FFFF);
         }
 
         // Center Temp
+        // Need to capture result immediately as buffer is reused
         std::string centerT = formatTemp(frame._center._celsius, frame._center._fahrenheit);
         DrawText(centerT, centerX + 5, centerY - 5);
         
@@ -648,23 +670,14 @@ namespace Render
         // Let's create them here to fail early if memory issue.
         // Initialize pre-packed colormaps
         InitializeColormaps();
+        InitializeFont();
 
-        int targetW = width * scale;
-        int targetH = height * scale;
-        
+        // Create texture at source resolution (256x192 usually)
+        // SDL will handle scaling on GPU during RenderCopy
         _texture = SDL_CreateTexture(_renderer, SDL_PIXELFORMAT_ARGB8888, 
                                      SDL_TEXTUREACCESS_STREAMING, 
-                                     targetW, targetH);
+                                     width, height);
         
-        try {
-            _pixelBuffer.resize(width * height);
-            _scaledBuffer.resize(targetW * targetH);
-        } catch (const std::exception& e) {
-            std::cerr << "Failed to allocate buffers: " << e.what() << std::endl;
-            Shutdown();
-            return false;
-        }
-
         _isRunning = true;
         _fpsTimer = SDL_GetTicks();
         

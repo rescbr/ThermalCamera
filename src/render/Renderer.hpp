@@ -34,12 +34,12 @@ namespace Render
 
     private:
         // Internal helpers
-        void ApplyColormap(const Thermal::ThermalFrame& frame, uint32_t* outputBuffer);
+        void ApplyColormap(const Thermal::ThermalFrame& frame, void* pixels, int pitch);
         void InitializeColormaps();
-        void ScaleFrame(const uint32_t* sourceBuffer, uint32_t* destBuffer, int srcWidth, int srcHeight, int destWidth, int destHeight);
         void RenderHUD(const Thermal::ThermalFrame& frame);
 
         // Font rendering helpers
+        void InitializeFont();
         void DrawText(const std::string& text, int x, int y, uint32_t color = 0xFFFFFFFF);
 
         Config::Config& _config;
@@ -47,11 +47,14 @@ namespace Render
         SDL_Window* _window;
         SDL_Renderer* _renderer;
         SDL_Texture* _texture;
+        
+        // Font Atlas
+        SDL_Texture* _fontTexture;
+        std::vector<SDL_Rect> _glyphRects;
 
         // Buffers
-        std::vector<uint32_t> _pixelBuffer;
-        std::vector<uint32_t> _scaledBuffer;
-
+        // std::vector<uint32_t> _pixelBuffer; // Removed
+        
         // Pre-packed colormaps
         std::vector<std::vector<uint32_t>> _packedColormaps;
 

@@ -55,10 +55,11 @@ namespace Thermal
             output._data.resize(width * height);
         }
 
-        // Camera sends big-endian 16-bit values, need to swap bytes for little-endian systems
+        // Camera sends little-endian 16-bit values (standard UVC thermal data)
+        // With native YUYV capture, we can read directly as LE
         for (int i = 0; i < width * height; ++i)
         {
-            uint16_t rawValue = (rawFrame[offset + i * 2] << 8) | (rawFrame[offset + i * 2 + 1]);
+            uint16_t rawValue = rawFrame[offset + i * 2] | (rawFrame[offset + i * 2 + 1] << 8);
             output._data[i] = rawValue;
         }
     }

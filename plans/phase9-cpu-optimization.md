@@ -353,6 +353,71 @@ void Renderer::DrawText(const std::string& text, int x, int y, uint32_t color)
 
 **Status: Ready for production**
 
+## Phase 5: Disable macOS Reaction Effects (Emergency Fix)
+
+**Impact:** ~15-20% CPU reduction (eliminating unintended framework overhead)
+
+### Problem Discovered
+The time profiler trace (2025) revealed that despite the previous optimizations achieving ~1% CPU usage in the ThermalCamera application itself, an additional ~20% CPU was being consumed by macOS system frameworks:
+
+- **VCPHandGestureVideoRequest / VCPHandPoseImageRequest**: Apple's Vision framework for hand gesture detection
+- **Espresso / ANECompilerEngine**: Apple Neural Engine compilers for ML models
+- **Total overhead:** ~23.7% of CPU time (from profile.txt)
+
+### Root Cause
+macOS Sonoma (14.0+) and later automatically enable **"Reaction Effects"** on video capture devices. This feature:
+- Runs CoreML models on every frame to detect hand gestures (thumbs up, peace sign, etc.)
+- Uses the Apple Neural Engine (ANE) for processing
+- Is enabled by default even for applications that don't use it
+
+The thermal camera feed is being analyzed for hand gestures by the operating system, causing significant CPU overhead.
+
+### Solution Implemented
+Explicitly disable macOS Reaction Effects in the camera initialization:
+
+**File Modified:** `src/camera/MacAVFoundationStreamer.mm`
+
+**Code Added:**
+```objectivec
+for (AVCaptureConnection* connection in _videoOutput.connections)
+{
+    if (connection.isVideoMirroringSupported)
+    {
+        connection.videoMirrored = NO;
+    }
+
+    // Disable macOS 14.0+ Reaction Effects (Gestures) to save CPU
+    if (@available(macOS 14.0, *))
+    {
+        if ([connection respondsToSelector:@selector(setVideoEffects:)])
+        {
+            [connection setValue:@[] forKey:@"videoEffects"];
+            std::cerr << "[INFO] Disabled macOS Reaction Effects (Gestures) to save CPU" << std::endl;
+        }
+    }
+}
+```
+
+**Implementation Notes:**
+- Uses Key-Value Coding (KVC) to set `videoEffects` to an empty array
+- The `videoEffects` property is not fully exposed in current SDK headers, so we use `setValue:forKey:` 
+- Checks for availability with `@available(macOS 14.0, *)`
+- Checks for property existence with `respondsToSelector:` for safety
+
+### Expected Results
+- **Eliminate** the VCPHandGestureVideoRequest overhead
+- **Eliminate** the Espresso/ANECompilerEngine overhead
+- **Total CPU usage** should drop from ~20% back to the expected ~1%
+- **No impact** on thermal camera functionality
+
+### Validation
+- Re-run the application with the fix
+- Check that CPU usage in Activity Monitor is now ~1% (not ~20%)
+- Verify thermal camera still captures and displays correctly
+- Optional: Run xctrace again to confirm VCP/Espresso threads are gone
+
+---
+
 ## Testing & Benchmarking Status
 
 ### Completed Optimizations:

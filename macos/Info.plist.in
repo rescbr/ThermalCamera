@@ -22,5 +22,9 @@
     <!-- Optional: Microphone if needed -->
     <key>NSMicrophoneUsageDescription</key>
     <string>Audio capture for thermal camera recording</string>
+
+    <!-- Disable macOS 14.0+ Reaction Effects (Gestures) by default to save CPU -->
+    <key>NSCameraReactionEffectGesturesEnabledDefault</key>
+    <false/>
 </dict>
 </plist>

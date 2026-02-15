@@ -61,26 +61,26 @@ void TestStatistics()
     std::vector<uint8_t> rawFrame(384 * 256 * 2, 0);
     
     // Use uint8_t pointer to write bytes directly to control endianness
-    // The processor expects Big Endian data (MSB first)
+    // The processor expects Little Endian data (standard UVC)
     uint8_t* thermalData = rawFrame.data() + 192 * 256 * 2;
     
     // Fill with 20C (approx 18762)
     uint16_t val20C = static_cast<uint16_t>((20.0f + 273.15f) * 64.0f);
     for (int i = 0; i < 192 * 256; ++i) {
-        thermalData[i*2] = (val20C >> 8) & 0xFF;
-        thermalData[i*2+1] = val20C & 0xFF;
+        thermalData[i*2] = val20C & 0xFF;
+        thermalData[i*2+1] = (val20C >> 8) & 0xFF;
     }
     
     // Set min at (0,0) to 0C
     uint16_t val0C = static_cast<uint16_t>((0.0f + 273.15f) * 64.0f);
-    thermalData[0] = (val0C >> 8) & 0xFF;
-    thermalData[1] = val0C & 0xFF;
+    thermalData[0] = val0C & 0xFF;
+    thermalData[1] = (val0C >> 8) & 0xFF;
     
     // Set max at (10,10) to 100C
     uint16_t val100C = static_cast<uint16_t>((100.0f + 273.15f) * 64.0f);
     int idx100C = 10 * 256 + 10;
-    thermalData[idx100C*2] = (val100C >> 8) & 0xFF;
-    thermalData[idx100C*2+1] = val100C & 0xFF;
+    thermalData[idx100C*2] = val100C & 0xFF;
+    thermalData[idx100C*2+1] = (val100C >> 8) & 0xFF;
     
     processor.ProcessFrame(rawFrame.data(), output);
     
