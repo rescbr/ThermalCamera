@@ -90,6 +90,12 @@ namespace Render
         int _cropY = 0;
         bool _prevR2 = false;
         bool _prevL2 = false;
+        int _winW = 1280;
+        int _winH = 720;
+        int _viewX = 0;
+        int _viewY = 0;
+        int _viewW = 0;
+        int _viewH = 0;
 
         // Performance tracking
         // uint32_t _lastFrameTime;

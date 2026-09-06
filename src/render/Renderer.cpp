@@ -162,10 +162,10 @@ namespace Render
 
         // --- Rendering Steps ---
 
-        // Use a logical coordinate system of targetW x targetH: SDL scales and
-        // letterboxes the rendering automatically, and the HUD can always draw
-        // in "scaled image" coordinates regardless of the real window size.
-        SDL_RenderSetLogicalSize(_renderer, targetW, targetH);
+        // All drawing happens in real window pixels; the image is letterboxed
+        // manually so the HUD can overlay the entire window.
+        SDL_GetRendererOutputSize(_renderer, &_winW, &_winH);
+        _fontScale = std::clamp(_winH / 320, 1, 2); // HUD text grows with window height
 
         // Apply analog stick probe movement (per frame)
         ApplyStickMovement();
@@ -188,22 +188,29 @@ namespace Render
         SDL_UnlockTexture(_texture);
 
         // Step 3: Render texture to screen (GPU Scaling)
-        // Zoom: render a crop of the frame centered on the probe. The crop
-        // keeps the frame aspect, so the image stays undistorted and fills
-        // the same logical area as the unzoomed view.
+        // Zoom: render a crop of the frame centered on the probe, scaled to
+        // fill the window while preserving the frame aspect (letterboxed).
         const int maxZoom = std::max(1, std::min(frame._width, frame._height) / 48);
         if (_zoom > maxZoom) _zoom = maxZoom;
         const int cropW = std::max(1, frame._width / _zoom);
         const int cropH = std::max(1, frame._height / _zoom);
-        const int probeFrameX = _probeX / std::max(1, scale);
-        const int probeFrameY = _probeY / std::max(1, scale);
+        const int probeFrameX = _probeX * frame._width / std::max(1, _winW);
+        const int probeFrameY = _probeY * frame._height / std::max(1, _winH);
         _cropX = std::clamp(probeFrameX - cropW / 2, 0, frame._width - cropW);
         _cropY = std::clamp(probeFrameY - cropH / 2, 0, frame._height - cropH);
+
+        // Aspect-correct destination rect (letterbox) inside the window
+        const float fit = std::min((float)_winW / cropW, (float)_winH / cropH);
+        _viewW = (int)(cropW * fit);
+        _viewH = (int)(cropH * fit);
+        _viewX = (_winW - _viewW) / 2;
+        _viewY = (_winH - _viewH) / 2;
 
         SDL_SetRenderDrawColor(_renderer, 0, 0, 0, 255);
         SDL_RenderClear(_renderer);
         SDL_Rect srcRect = { _cropX, _cropY, cropW, cropH };
-        SDL_RenderCopy(_renderer, _texture, &srcRect, nullptr);
+        SDL_Rect dstRect = { _viewX, _viewY, _viewW, _viewH };
+        SDL_RenderCopy(_renderer, _texture, &srcRect, &dstRect);
         
         // Step 4: Render HUD
         if (_showHud) {
@@ -447,11 +454,9 @@ namespace Render
 
     void Renderer::MoveProbe(int dx, int dy)
     {
-        // Frame is 256x384 thermal pixels scaled to window space
-        const int maxW = 256 * _config.GetScaleFactor();
-        const int maxH = 384 * _config.GetScaleFactor();
-        _probeX = std::clamp(_probeX + dx, 0, maxW - 1);
-        _probeY = std::clamp(_probeY + dy, 0, maxH - 1);
+        // Probe lives in real window pixels
+        _probeX = std::clamp(_probeX + dx, 0, std::max(0, _winW - 1));
+        _probeY = std::clamp(_probeY + dy, 0, std::max(0, _winH - 1));
         _probeActive = true;
     }
 
@@ -471,21 +476,34 @@ namespace Render
 
     void Renderer::RenderHUD(const Thermal::ThermalFrame& frame)
     {
-        int scale = _config.GetScaleFactor();
-        int fs = _fontScale; // font scale (bold 14pt base)
-        int width = frame._width * scale;
-        int height = frame._height * scale;
-        int centerX = width / 2;
-        int centerY = height / 2;
-        int size = 10 * scale;
+        int fs = _fontScale; // font scale (14pt base, grows with window height)
+        int width = _winW;   // HUD overlays the entire window
+        int height = _winH;
         int margin = 10 * fs;
         int lineStep = 19 * fs;
         int topBase = 24 * fs; // baseline of first HUD line
 
-        // Draw crosshair at center
+        // Probe position on screen: through the zoom crop into the letterbox rect
+        const int frameX = _probeX * frame._width / std::max(1, _winW);
+        const int frameY = _probeY * frame._height / std::max(1, _winH);
+        const float fit = std::min((float)_winW / std::max(1, frame._width / _zoom),
+                                   (float)_winH / std::max(1, frame._height / _zoom));
+        int crossX = _viewX + (frameX - _cropX) * (int)fit;
+        int crossY = _viewY + (frameY - _cropY) * (int)fit;
+
+        // Fall back to frame center when the probe has never been moved
+        if (!_probeActive) {
+            crossX = _viewX + _viewW / 2;
+            crossY = _viewY + _viewH / 2;
+        }
+        crossX = std::clamp(crossX, _viewX, _viewX + _viewW);
+        crossY = std::clamp(crossY, _viewY, _viewY + _viewH);
+
+        // Crosshair marks the measured spot
+        int size = 10 * fs;
         SDL_SetRenderDrawColor(_renderer, 255, 255, 255, 255);
-        SDL_RenderDrawLine(_renderer, centerX - size, centerY, centerX + size, centerY);
-        SDL_RenderDrawLine(_renderer, centerX, centerY - size, centerX, centerY + size);
+        SDL_RenderDrawLine(_renderer, crossX - size, crossY, crossX + size, crossY);
+        SDL_RenderDrawLine(_renderer, crossX, crossY - size, crossX, crossY + size);
         
         bool useCelsius = _config.GetUseCelsius();
         
@@ -519,7 +537,7 @@ namespace Render
         int rightX = width - margin - TextWidth(cmapName);
         DrawText(cmapName, rightX, topBase);
         
-        snprintf(buffer, sizeof(buffer), "Scale: %dX", scale);
+        snprintf(buffer, sizeof(buffer), "Zoom: %dx", _zoom);
         rightX = width - margin - TextWidth(buffer);
         DrawText(buffer, rightX, topBase + lineStep);
         
@@ -528,30 +546,24 @@ namespace Render
             DrawText(frozen, width - margin - TextWidth(frozen), topBase + 2 * lineStep, 0xFF00FFFF);
         }
 
-        // Center Temp
-        // Need to capture result immediately as buffer is reused
-        std::string centerT = formatTemp(frame._center._celsius, frame._center._fahrenheit);
-        DrawText(centerT, centerX + 6 * fs, centerY - 6 * fs, 0xFFFFFFFF, /*bold=*/true);
-        
-         // Probe readout (gamepad stick / mouse)
-        if (_isProbeEnabled && _probeActive) {
-            const int sc = std::max(1, scale);
-            const int frameX = _probeX / sc;
-            const int frameY = _probeY / sc;
+        // Single measured-temperature readout at the crosshair.
+        // Shows the probe temperature when active, frame center otherwise.
+        {
+            int readX = frameX, readY = frameY;
+            if (!_probeActive) {
+                readX = (frame._width * _zoom) / 2 + _cropX;
+                readY = (frame._height * _zoom) / 2 + _cropY;
+            }
 
-            // Map frame coords to on-screen position through the zoom crop
-            const int drawX = (frameX - _cropX) * sc * _zoom;
-            const int drawY = (frameY - _cropY) * sc * _zoom;
-
-            if (frameX >= 0 && frameX < frame._width && frameY >= 0 && frameY < frame._height) {
-                Thermal::Temperature t = Thermal::ThermalProcessor::GetTemperatureAt(frame, frameY, frameX);
+            if (readX >= 0 && readX < frame._width && readY >= 0 && readY < frame._height) {
+                Thermal::Temperature t = Thermal::ThermalProcessor::GetTemperatureAt(frame, readY, readX);
 
                 std::string probeT = formatTemp(t._celsius, t._fahrenheit);
-                DrawText(probeT, drawX + 12 * fs, drawY + 12 * fs, 0xFFFFFFFF, /*bold=*/true);
+                DrawText(probeT, crossX + 12 * fs, crossY + 12 * fs, 0xFFFFFFFF, /*bold=*/true);
 
-                // Draw small box/cross at probe point
+                // Small marker box at the exact measured point
                 SDL_SetRenderDrawColor(_renderer, 255, 255, 0, 255);
-                SDL_Rect rect = {drawX - 2 * fs, drawY - 2 * fs, 5 * fs, 5 * fs};
+                SDL_Rect rect = {crossX - 2 * fs, crossY - 2 * fs, 5 * fs, 5 * fs};
                  SDL_RenderDrawRect(_renderer, &rect);
             }
         }
