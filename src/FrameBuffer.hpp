@@ -54,11 +54,11 @@ public:
         _frameReady.notify_one();
     }
 
-    // Wait for a new frame to be ready
+    // Wait for a new frame to be ready (bounded so lost wakeups can't hang us)
     void WaitForNewFrame()
     {
         std::unique_lock<std::mutex> lock(_mutex);
-        _frameReady.wait(lock);
+        _frameReady.wait_for(lock, std::chrono::milliseconds(100));
     }
     
     // Wake up any waiting threads (e.g. for shutdown)
