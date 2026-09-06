@@ -167,6 +167,9 @@ namespace Render
         // in "scaled image" coordinates regardless of the real window size.
         SDL_RenderSetLogicalSize(_renderer, targetW, targetH);
 
+        // Apply analog stick probe movement (per frame)
+        ApplyStickMovement();
+
         // Step 1: Lock Texture to write pixels directly
         void* pixels;
         int pitch;
@@ -424,6 +427,35 @@ namespace Render
         return w * _fontScale;
     }
 
+    int Renderer::ProbeStep() const
+    {
+        return std::max(1, _config.GetScaleFactor() / 2); // fine control in frame pixels
+    }
+
+    void Renderer::MoveProbe(int dx, int dy)
+    {
+        // Frame is 256x384 thermal pixels scaled to window space
+        const int maxW = 256 * _config.GetScaleFactor();
+        const int maxH = 384 * _config.GetScaleFactor();
+        _probeX = std::clamp(_probeX + dx, 0, maxW - 1);
+        _probeY = std::clamp(_probeY + dy, 0, maxH - 1);
+        _probeActive = true;
+    }
+
+    void Renderer::ApplyStickMovement()
+    {
+        // Analog stick: 1 frame-pixel per frame at deadzone, faster the further pushed
+        const int deadzone = 6000;
+        if (std::abs(_stickX) > deadzone)
+        {
+            MoveProbe((_stickX / 16000) * ProbeStep(), 0);
+        }
+        if (std::abs(_stickY) > deadzone)
+        {
+            MoveProbe(0, (_stickY / 16000) * ProbeStep());
+        }
+    }
+
     void Renderer::RenderHUD(const Thermal::ThermalFrame& frame)
     {
         int scale = _config.GetScaleFactor();
@@ -488,31 +520,27 @@ namespace Render
         std::string centerT = formatTemp(frame._center._celsius, frame._center._fahrenheit);
         DrawText(centerT, centerX + 6 * fs, centerY - 6 * fs, 0xFFFFFFFF, /*bold=*/true);
         
-         // Mouse Probe
-        if (_isProbeEnabled && _mouseX >= 0 && _mouseY >= 0) {
-            // _mouseX and _mouseY are already in thermal frame coordinates (0-frame._width, 0-frame._height)
-            // We need to scale them to the actual rendered image space for drawing
-            // Thermal frame size is frame._width x frame._height
-            // Rendered image size is viewportRect.w x viewportRect.h
-            int drawX = (_mouseX * width) / frame._width;
-            int drawY = (_mouseY * height) / frame._height;
+         // Probe readout (gamepad stick / mouse)
+        if (_isProbeEnabled && _probeActive) {
+            int frameX = _probeX / std::max(1, _config.GetScaleFactor());
+            int frameY = _probeY / std::max(1, _config.GetScaleFactor());
 
-            if (_mouseX >= 0 && _mouseX < frame._width && _mouseY >= 0 && _mouseY < frame._height) {
-                Thermal::Temperature t = Thermal::ThermalProcessor::GetTemperatureAt(frame, _mouseY, _mouseX);
+            if (frameX >= 0 && frameX < frame._width && frameY >= 0 && frameY < frame._height) {
+                Thermal::Temperature t = Thermal::ThermalProcessor::GetTemperatureAt(frame, frameY, frameX);
 
                 std::string probeT = formatTemp(t._celsius, t._fahrenheit);
-                DrawText(probeT, drawX + 12 * fs, drawY + 12 * fs, 0xFFFFFFFF, /*bold=*/true);
+                DrawText(probeT, _probeX + 12 * fs, _probeY + 12 * fs, 0xFFFFFFFF, /*bold=*/true);
 
-                // Draw small box/cross at cursor
+                // Draw small box/cross at probe point
                 SDL_SetRenderDrawColor(_renderer, 255, 255, 0, 255);
-                SDL_Rect rect = {drawX - 2, drawY - 2, 5, 5};
+                SDL_Rect rect = {_probeX - 2 * fs, _probeY - 2 * fs, 5 * fs, 5 * fs};
                  SDL_RenderDrawRect(_renderer, &rect);
             }
         }
 
         // Bottom: Controls hint
         if (height > 100) {
-            DrawText("[H]UD  [Space] Freeze  [Q] Quit", margin, height - 12 * fs);
+            DrawText("[H]UD A:Map X:Frz Y:Unit St:Quit", margin, height - 12 * fs);
         }
     }
 
@@ -527,14 +555,73 @@ namespace Render
             }
             else if (event.type == SDL_MOUSEMOTION)
             {
-                _mouseX = event.motion.x;
-                _mouseY = event.motion.y;
+                // SDL maps window coords to our logical size automatically
+                _probeX = event.motion.x;
+                _probeY = event.motion.y;
+                _probeActive = true;
             }
             else if (event.type == SDL_MOUSEBUTTONDOWN)
             {
                 if (event.button.button == SDL_BUTTON_RIGHT) {
                     _isProbeEnabled = !_isProbeEnabled;
                 }
+            }
+            else if (event.type == SDL_CONTROLLERBUTTONDOWN)
+            {
+                switch (event.cbutton.button)
+                {
+                    case SDL_CONTROLLER_BUTTON_START:
+                    case SDL_CONTROLLER_BUTTON_GUIDE:
+                        _isRunning = false;
+                        break;
+                    case SDL_CONTROLLER_BUTTON_BACK:
+                        _showHud = !_showHud;
+                        break;
+                    case SDL_CONTROLLER_BUTTON_DPAD_UP:
+                        MoveProbe(0, -ProbeStep());
+                        break;
+                    case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
+                        MoveProbe(0, ProbeStep());
+                        break;
+                    case SDL_CONTROLLER_BUTTON_DPAD_LEFT:
+                        MoveProbe(-ProbeStep(), 0);
+                        break;
+                    case SDL_CONTROLLER_BUTTON_DPAD_RIGHT:
+                        MoveProbe(ProbeStep(), 0);
+                        break;
+                    case SDL_CONTROLLER_BUTTON_A:
+                    case SDL_CONTROLLER_BUTTON_B:
+                    {
+                        int c = _config.GetColormapIndex();
+                        int dir = (event.cbutton.button == SDL_CONTROLLER_BUTTON_A) ? 1 : -1;
+                        _config.SetColormapIndex((c + COLORMAP_COUNT + dir) % COLORMAP_COUNT);
+                    }
+                        break;
+                    case SDL_CONTROLLER_BUTTON_X:
+                        _config.SetFreezeFrame(!_config.GetFreezeFrame());
+                        break;
+                    case SDL_CONTROLLER_BUTTON_Y:
+                        _config.SetUseCelsius(!_config.GetUseCelsius());
+                        break;
+                    case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:
+                        _isProbeEnabled = !_isProbeEnabled;
+                        break;
+                }
+            }
+            else if (event.type == SDL_CONTROLLERAXISMOTION)
+            {
+                if (event.caxis.axis == SDL_CONTROLLER_AXIS_LEFTX)
+                {
+                    _stickX = event.caxis.value;
+                }
+                else if (event.caxis.axis == SDL_CONTROLLER_AXIS_LEFTY)
+                {
+                    _stickY = event.caxis.value;
+                }
+            }
+            else if (event.type == SDL_CONTROLLERDEVICEADDED)
+            {
+                SDL_GameControllerOpen(event.cdevice.which);
             }
             else if (event.type == SDL_KEYDOWN)
             {
@@ -617,10 +704,19 @@ namespace Render
         _windowWidth = width;
         // _windowHeight = height; // Not stored currently
 
-        if (SDL_Init(SDL_INIT_VIDEO) != 0)
+        if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) != 0)
         {
             LOG_ERROR(std::string("SDL_Init Error: ") + SDL_GetError());
             return false;
+        }
+
+        // Open all connected gamepads (handheld console controls)
+        for (int i = 0; i < SDL_NumJoysticks(); ++i)
+        {
+            if (SDL_IsGameController(i))
+            {
+                SDL_GameControllerOpen(i);
+            }
         }
 
         // Create window

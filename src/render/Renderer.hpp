@@ -43,6 +43,11 @@ namespace Render
         void DrawText(const std::string& text, int x, int y, uint32_t color = 0xFFFFFFFF, bool bold = false);
         int TextWidth(const std::string& text, bool bold = false) const;
 
+        // Probe (temperature spot readout) helpers
+        int ProbeStep() const;
+        void MoveProbe(int dx, int dy);
+        void ApplyStickMovement();
+
         Config::Config& _config;
 
         SDL_Window* _window;
@@ -71,6 +76,13 @@ namespace Render
         int _mouseX = -1;
         int _mouseY = -1;
         bool _isProbeEnabled = true; // Default to true or toggleable
+
+        // Temperature probe cursor (window coords, moved by mouse/gamepad)
+        int _probeX = -1;
+        int _probeY = -1;
+        bool _probeActive = false;
+        int _stickX = 0;
+        int _stickY = 0;
 
         // Performance tracking
         // uint32_t _lastFrameTime;
