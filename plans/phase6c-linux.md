@@ -1,5 +1,16 @@
 # Phase 6c: Linux-Specific Polish
 
+> **ERRATUM (documentation audit 2026-09-06)**: Several items below are marked completed but are
+> **not reflected in the code**. Corrections:
+> - Task 6c.1: `LibuvcError`/`UsbError` error types were never defined; errors use plain
+>   `std::string` messages (see `src/camera/UvcCameraProvider.cpp`).
+> - Task 6c.4: SIMD optimizations were not applied; only loop unrolling (stride 8) exists in
+>   `src/thermal/ThermalProcessor.cpp`.
+> - Task 6c.6: ASAN/TSAN/-pg build options, .deb/.rpm packaging metadata, cpack support, install
+>   and udev rules do **not** exist in `meson.build` (only version + test targets are present).
+> - The `-std=c++14` checklist item is stale; the build uses `cpp_std=c++17`.
+> - Linux hardware-test checkmarks below are unverifiable from the repository.
+
 ## Overview
 
 Linux-specific polish tasks including libuvc error handling, Linux memory leak detection, performance profiling on Linux, and Linux release packaging.

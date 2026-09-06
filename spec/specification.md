@@ -27,6 +27,23 @@
 *   **Manual Selection**: `-d` argument for specific device path (Linux: `/dev/video0`, macOS: Location ID).
 *   **Streaming**: Continuous capture at ~25 FPS.
 *   **Hotplug**: Graceful handling of disconnects with automatic reconnection attempts.
+*   **Offline Mode**: `-f` argument replays a raw file instead of a live camera.
+
+### 2.1.1 CLI Options
+
+| Option | Description |
+|---|---|
+| `-d, --device <path>` | Camera device (Linux: `/dev/video0`, macOS: location ID); auto-detected if omitted |
+| `-f, --file <path>` | Offline raw file input |
+| `--scale <1-10>` | Initial scale factor (default: 1) |
+| `--fullscreen` | Start in fullscreen mode |
+| `--colormap <0-6>` | Initial colormap index (default: 0) |
+| `--celsius` | Use Celsius units (default: Fahrenheit) |
+| `--quiet` | Suppress verbose output |
+| `--threads <count>` | Override thread count (default: 3) |
+| `-l, --list` | List all available cameras and exit |
+| `-h, --help` | Display help and exit |
+| `-v, --version` | Display version information and exit |
 
 ### 2.2 Image Processing
 *   **Raw Data**: Extracts 16-bit Kelvin values from the Y channel of the bottom half of the frame (rows 192-383).

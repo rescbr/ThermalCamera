@@ -5,7 +5,9 @@
 #include <string>
 #include <memory>
 #include <mutex>
+#include <condition_variable>
 #include <atomic>
+#include <chrono>
 #include <stdexcept>
 #include <libuvc/libuvc.h>
 
@@ -62,7 +64,10 @@ private:
     
     std::unique_ptr<uint8_t[]> _frameBuffer;
     size_t _frameSize;
+    uint64_t _frameSequence;
+    uint64_t _lastSequenceSeen;
     std::mutex _frameMutex;
+    std::condition_variable _frameCV;
     
     std::mutex _controlMutex;
     

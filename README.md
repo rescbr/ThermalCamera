@@ -30,14 +30,13 @@ A cross-platform thermal camera viewer application for Linux and macOS that capt
 ## Requirements
 
 ### Common
-- C++14 compatible compiler (GCC 5+ or Clang 3.4+)
+- C++17 compatible compiler (GCC 7+ or Clang 5+)
 - Meson build system
 - SDL2 (version 2.0.0 or higher)
-- CMake (for subproject dependencies)
 
 ### Linux
-- libuvc development headers
-- libusb-1.0 development headers
+- libusb-1.0 development headers (required)
+- libuvc development headers (optional — if missing, a vendored copy pinned to libuvc git master is built automatically from `subprojects/libuvc.wrap`)
 
 ### macOS
 - Xcode command line tools
@@ -63,7 +62,7 @@ meson compile -C builddir
 
 ```bash
 # Install dependencies
-brew install meson sdl2 libuvc
+brew install meson sdl2
 
 # Build the project
 meson setup builddir
@@ -93,6 +92,7 @@ Options:
   --threads <count>         Override thread count (default: 3)
   -l, --list                List all available cameras and exit
   -h, --help                Display this help and exit
+  -v, --version             Display version information and exit
 ```
 
 ### Examples
@@ -220,12 +220,15 @@ ThermalCamera/
 │   ├── main.cpp         # Application entry point
 │   ├── Error.hpp        # Error handling utilities
 │   ├── Profile.hpp      # Performance profiling utilities
+│   ├── version.hpp      # Version constants
 │   ├── FrameBuffer.hpp  # Double buffering implementation
 │   ├── camera/          # Camera implementations
 │   ├── thermal/         # Thermal data processing
 │   ├── render/          # SDL rendering
 │   ├── config/          # Configuration management
+│   ├── colormaps.hpp    # Pre-generated colormap data
 │   ├── fonts/           # Embedded fonts
+│   ├── tests/           # Unit tests
 │   └── vendor/          # Third-party dependencies
 └── plans/               # Implementation plans
 ```
@@ -234,7 +237,7 @@ ThermalCamera/
 
 - Indentation: 4 spaces (no tabs)
 - Naming: PascalCase for classes/functions, _camelCase for members
-- C++ Standard: C++14
+- C++ Standard: C++17
 - See [CODING_GUIDELINES.md](CODING_GUIDELINES.md) for details
 
 ### Building for Development

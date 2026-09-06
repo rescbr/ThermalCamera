@@ -20,3 +20,10 @@ sample_output.txt
 
 # Reference material
 FOR_REFERENCE_ONLY/
+
+# Meson wrap-downloaded subprojects
+subprojects/libuvc/
+packagecache/
+
+# Meson wrap state
+subprojects/.wraplock

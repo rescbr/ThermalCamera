@@ -85,7 +85,7 @@ The system uses an interface-based design for hardware abstraction:
 ### Rendering Optimizations
 
 *   **GPU Acceleration**:
-    *   Texture stored at source resolution (256×192) with `SDL_TEXTUREACCESS_STATIC`
+    *   Texture stored at source resolution (256×192) with `SDL_TEXTUREACCESS_STREAMING`
     *   Scaling delegated to GPU during `SDL_RenderCopy()` operation
     *   **Eliminated**: CPU bilinear interpolation (~4.5ms per frame, 13M pixels/sec at 30 FPS)
     *   **Memory Savings**: 1.7 MB buffer removed (no scaling buffer)

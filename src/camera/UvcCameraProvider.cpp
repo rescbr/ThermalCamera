@@ -1,8 +1,9 @@
 #include "UvcCameraProvider.hpp"
-
-#include <iostream>
 #include <cstring>
+#include <fstream>
+#include <iostream>
 #include <stdexcept>
+#include <sys/stat.h>
 
 static const int FRAME_WIDTH = 256;
 static const int FRAME_HEIGHT = 384;
@@ -18,6 +19,7 @@ UvcCameraProvider::UvcCameraProvider()
     , _productId(0)
     , _frameBuffer(nullptr)
     , _frameSize(0)
+    , _frameSequence(0)
     , _isRunning(false)
 {
 }
@@ -45,19 +47,138 @@ UvcCameraProvider::~UvcCameraProvider()
     }
 }
 
+namespace
+{
+
+// Parse "bus:address" (decimal). Returns false if malformed.
+bool ParseBusAddress(const std::string& path, int& bus, int& address)
+{
+    size_t colon = path.find(':');
+    if (colon == std::string::npos || colon == 0 || colon + 1 == path.size())
+    {
+        return false;
+    }
+
+    try
+    {
+        bus = std::stoi(path.substr(0, colon));
+        address = std::stoi(path.substr(colon + 1));
+    }
+    catch (const std::exception&)
+    {
+        return false;
+    }
+
+    return bus > 0 && address > 0;
+}
+
+// Resolve "/dev/videoN" (or "N") to "bus:address" via sysfs.
+bool ResolveDeviceNode(const std::string& deviceNode, std::string& busAddress)
+{
+    std::string videoName = deviceNode;
+    size_t slash = videoName.rfind('/');
+    if (slash != std::string::npos)
+    {
+        videoName = videoName.substr(slash + 1);
+    }
+
+    if (videoName.rfind("video", 0) != 0)
+    {
+        return false;
+    }
+
+    std::string sysBase = "/sys/class/video4linux/" + videoName + "/device/";
+    std::ifstream busFile(sysBase + "busnum");
+    std::ifstream addrFile(sysBase + "devnum");
+
+    int bus = 0, address = 0;
+    if (busFile >> bus && addrFile >> address && bus > 0 && address > 0)
+    {
+        busAddress = std::to_string(bus) + ":" + std::to_string(address);
+        return true;
+    }
+
+    return false;
+}
+
+// Find a UVC device by "bus:address". Returns a referenced device (caller
+// must uvc_unref_device) or nullptr. Empty matchTarget returns first device.
+uvc_device_t* FindDeviceByPath(uvc_context_t* context, const std::string& matchTarget)
+{
+    uvc_device_t** devices = nullptr;
+    if (uvc_get_device_list(context, &devices) < 0 || devices == nullptr)
+    {
+        return nullptr;
+    }
+
+    uvc_device_t* found = nullptr;
+
+    for (int i = 0; devices[i] != nullptr; ++i)
+    {
+        if (matchTarget.empty())
+        {
+            found = devices[i];
+            uvc_ref_device(found);
+            break;
+        }
+
+        char busAddress[32];
+        snprintf(busAddress, sizeof(busAddress), "%u:%u",
+                 uvc_get_bus_number(devices[i]), uvc_get_device_address(devices[i]));
+
+        if (matchTarget == busAddress)
+        {
+            found = devices[i];
+            uvc_ref_device(found);
+            break;
+        }
+    }
+
+    uvc_free_device_list(devices, 1);
+    return found;
+}
+
+} // namespace
+
 void UvcCameraProvider::Initialize(const std::string& devicePath)
 {
     uvc_error_t res = uvc_init(&_context, nullptr);
+
     if (res < 0)
     {
         std::string msg = "Failed to initialize UVC context: " + std::string(uvc_strerror(res));
         throw std::runtime_error(msg);
     }
 
-    res = uvc_find_device(_context, &_device, 0, 0, devicePath.c_str());
-    if (res < 0)
+    // Accept "bus:address", "/dev/videoN", or empty (first device).
+    std::string matchTarget = devicePath;
+
+    if (matchTarget.rfind("/dev/video", 0) == 0 ||
+        (matchTarget.find('/' ) == std::string::npos &&
+         !matchTarget.empty() && matchTarget.find(':') == std::string::npos &&// bare number
+         matchTarget.find_first_not_of("0123456789") == std::string::npos))
     {
-        std::string msg = "Failed to find UVC device " + devicePath + ": " + uvc_strerror(res);
+        std::string resolved;
+        if (!ResolveDeviceNode(matchTarget, resolved))
+        {
+            uvc_exit(_context);
+            _context = nullptr;
+            throw std::runtime_error("Cannot resolve device node " + devicePath + " (is it a UVC camera?)");
+        }
+        matchTarget = resolved;
+    }
+
+    _device = FindDeviceByPath(_context, matchTarget);
+    if (_device == nullptr)
+    {
+        std::string msg = "Failed to find UVC device " + devicePath;
+        if (matchTarget != devicePath)
+        {
+            msg += " (" + matchTarget + ")";
+        }
+        msg += " - device may be disconnected or in use";
+        uvc_exit(_context);
+        _context = nullptr;
         throw std::runtime_error(msg);
     }
 
@@ -76,6 +197,13 @@ void UvcCameraProvider::Initialize(const std::string& devicePath)
         _vendorId = desc->idVendor;
         _productId = desc->idProduct;
         uvc_free_device_descriptor(desc);
+    }
+
+    {
+        _frameSize = 0;
+        _frameSequence = 0;
+        _lastSequenceSeen = 0;
+        _frameBuffer.reset();
     }
 
     uvc_print_diag(_deviceHandle, stderr);
@@ -118,6 +246,8 @@ void UvcCameraProvider::StartStreaming()
             }
 
             std::memcpy(camera->_frameBuffer.get(), frame->data, frame->data_bytes);
+            camera->_frameSequence++;
+            camera->_frameCV.notify_all();
         },
         this,
         0
@@ -141,6 +271,7 @@ void UvcCameraProvider::StopStreaming()
     }
 
     _isRunning = false;
+    _frameCV.notify_all();
 
     if (_streamHandle)
     {
@@ -153,11 +284,17 @@ void UvcCameraProvider::StopStreaming()
 
 void UvcCameraProvider::GetFrame(uint8_t* buffer, size_t bufferSize, size_t& bytesWritten)
 {
-    std::lock_guard<std::mutex> lock(_frameMutex);
+    std::unique_lock<std::mutex> lock(_frameMutex);
 
-    if (!_frameBuffer || _frameSize == 0)
+    // Block until a new frame arrives (or timeout so the caller stays responsive)
+    bool gotFrame = _frameCV.wait_for(lock, std::chrono::milliseconds(500), [this] {
+        return _frameSequence != _lastSequenceSeen;
+    });
+
+    if (!gotFrame || !_frameBuffer || _frameSize == 0)
     {
-        throw std::runtime_error("No frame buffer available");
+        bytesWritten = 0;
+        return;
     }
 
     if (bufferSize < _frameSize)
@@ -168,6 +305,7 @@ void UvcCameraProvider::GetFrame(uint8_t* buffer, size_t bufferSize, size_t& byt
     }
 
     std::memcpy(buffer, _frameBuffer.get(), _frameSize);
+    _lastSequenceSeen = _frameSequence;
     bytesWritten = _frameSize;
 }
 
@@ -203,7 +341,7 @@ bool UvcCameraProvider::SetBrightness(int value)
         return false;
     }
 
-    int result = uvc_set_brightness(_deviceHandle, value);
+    uvc_error_t result = uvc_set_brightness(_deviceHandle, static_cast<int16_t>(value));
     if (result < 0)
     {
         std::cerr << "Warning: Set brightness failed\n";
@@ -211,8 +349,8 @@ bool UvcCameraProvider::SetBrightness(int value)
         return false;
     }
 
-    int readBack = 0;
-    result = uvc_get_brightness(_deviceHandle, &readBack);
+    int16_t readBack = 0;
+    result = uvc_get_brightness(_deviceHandle, &readBack, UVC_GET_CUR);
     if (result < 0)
     {
         std::cerr << "Warning: Set brightness to " << value
@@ -243,7 +381,7 @@ bool UvcCameraProvider::SetWhiteBalanceTemperature(int value)
         return false;
     }
 
-    int result = uvc_set_white_balance_temperature(_deviceHandle, value);
+    uvc_error_t result = uvc_set_white_balance_temperature(_deviceHandle, static_cast<uint16_t>(value));
     if (result < 0)
     {
         std::cerr << "Warning: Set white balance temperature failed\n";
@@ -251,8 +389,8 @@ bool UvcCameraProvider::SetWhiteBalanceTemperature(int value)
         return false;
     }
 
-    int readBack = 0;
-    result = uvc_get_white_balance_temperature(_deviceHandle, &readBack);
+    uint16_t readBack = 0;
+    result = uvc_get_white_balance_temperature(_deviceHandle, &readBack, UVC_GET_CUR);
     if (result < 0)
     {
         std::cerr << "Warning: Set white balance temperature to " << value
@@ -283,7 +421,7 @@ bool UvcCameraProvider::SetBacklightCompensation(int value)
         return false;
     }
 
-    int result = uvc_set_backlight_compensation(_deviceHandle, value);
+    uvc_error_t result = uvc_set_backlight_compensation(_deviceHandle, static_cast<uint16_t>(value));
     if (result < 0)
     {
         std::cerr << "Warning: Set backlight compensation failed\n";
@@ -291,8 +429,8 @@ bool UvcCameraProvider::SetBacklightCompensation(int value)
         return false;
     }
 
-    int readBack = 0;
-    result = uvc_get_backlight_compensation(_deviceHandle, &readBack);
+    uint16_t readBack = 0;
+    result = uvc_get_backlight_compensation(_deviceHandle, &readBack, UVC_GET_CUR);
     if (result < 0)
     {
         std::cerr << "Warning: Set backlight compensation to " << value
@@ -323,7 +461,7 @@ bool UvcCameraProvider::SetPowerLineFrequency(int value)
         return false;
     }
 
-    int result = uvc_set_power_line_frequency(_deviceHandle, value);
+    uvc_error_t result = uvc_set_power_line_frequency(_deviceHandle, static_cast<uint8_t>(value));
     if (result < 0)
     {
         std::cerr << "Warning: Set power line frequency failed\n";
@@ -331,8 +469,8 @@ bool UvcCameraProvider::SetPowerLineFrequency(int value)
         return false;
     }
 
-    int readBack = 0;
-    result = uvc_get_power_line_frequency(_deviceHandle, &readBack);
+    uint8_t readBack = 0;
+    result = uvc_get_power_line_frequency(_deviceHandle, &readBack, UVC_GET_CUR);
     if (result < 0)
     {
         std::cerr << "Warning: Set power line frequency to " << value
@@ -348,7 +486,7 @@ bool UvcCameraProvider::SetPowerLineFrequency(int value)
         return false;
     }
 
-    std::cerr << "Set power line frequency to " << value << " (confirmed: " << readBack << ")\n";
+    std::cerr << "Set power line frequency to " << value << " (confirmed: " << static_cast<int>(readBack) << ")\n";
     return true;
 }
 
@@ -363,7 +501,7 @@ bool UvcCameraProvider::SetSaturation(int value)
         return false;
     }
 
-    int result = uvc_set_saturation(_deviceHandle, value);
+    uvc_error_t result = uvc_set_saturation(_deviceHandle, static_cast<uint16_t>(value));
     if (result < 0)
     {
         std::cerr << "Warning: Set saturation failed\n";
@@ -371,8 +509,8 @@ bool UvcCameraProvider::SetSaturation(int value)
         return false;
     }
 
-    int readBack = 0;
-    result = uvc_get_saturation(_deviceHandle, &readBack);
+    uint16_t readBack = 0;
+    result = uvc_get_saturation(_deviceHandle, &readBack, UVC_GET_CUR);
     if (result < 0)
     {
         std::cerr << "Warning: Set saturation to " << value
@@ -403,7 +541,7 @@ bool UvcCameraProvider::SetSharpness(int value)
         return false;
     }
 
-    int result = uvc_set_sharpness(_deviceHandle, value);
+    uvc_error_t result = uvc_set_sharpness(_deviceHandle, static_cast<uint16_t>(value));
     if (result < 0)
     {
         std::cerr << "Warning: Set sharpness failed\n";
@@ -411,8 +549,8 @@ bool UvcCameraProvider::SetSharpness(int value)
         return false;
     }
 
-    int readBack = 0;
-    result = uvc_get_sharpness(_deviceHandle, &readBack);
+    uint16_t readBack = 0;
+    result = uvc_get_sharpness(_deviceHandle, &readBack, UVC_GET_CUR);
     if (result < 0)
     {
         std::cerr << "Warning: Set sharpness to " << value
@@ -443,7 +581,7 @@ bool UvcCameraProvider::SetContrast(int value)
         return false;
     }
 
-    int result = uvc_set_contrast(_deviceHandle, value);
+    uvc_error_t result = uvc_set_contrast(_deviceHandle, static_cast<uint16_t>(value));
     if (result < 0)
     {
         std::cerr << "Warning: Set contrast failed\n";
@@ -451,8 +589,8 @@ bool UvcCameraProvider::SetContrast(int value)
         return false;
     }
 
-    int readBack = 0;
-    result = uvc_get_contrast(_deviceHandle, &readBack);
+    uint16_t readBack = 0;
+    result = uvc_get_contrast(_deviceHandle, &readBack, UVC_GET_CUR);
     if (result < 0)
     {
         std::cerr << "Warning: Set contrast to " << value
@@ -483,7 +621,7 @@ bool UvcCameraProvider::SetHue(int value)
         return false;
     }
 
-    int result = uvc_set_hue(_deviceHandle, value);
+    uvc_error_t result = uvc_set_hue(_deviceHandle, static_cast<int16_t>(value));
     if (result < 0)
     {
         std::cerr << "Warning: Set hue failed\n";
@@ -491,8 +629,8 @@ bool UvcCameraProvider::SetHue(int value)
         return false;
     }
 
-    int readBack = 0;
-    result = uvc_get_hue(_deviceHandle, &readBack);
+    int16_t readBack = 0;
+    result = uvc_get_hue(_deviceHandle, &readBack, UVC_GET_CUR);
     if (result < 0)
     {
         std::cerr << "Warning: Set hue to " << value
@@ -523,7 +661,7 @@ bool UvcCameraProvider::SetGamma(int value)
         return false;
     }
 
-    int result = uvc_set_gamma(_deviceHandle, value);
+    uvc_error_t result = uvc_set_gamma(_deviceHandle, static_cast<uint16_t>(value));
     if (result < 0)
     {
         std::cerr << "Warning: Set gamma failed\n";
@@ -531,8 +669,8 @@ bool UvcCameraProvider::SetGamma(int value)
         return false;
     }
 
-    int readBack = 0;
-    result = uvc_get_gamma(_deviceHandle, &readBack);
+    uint16_t readBack = 0;
+    result = uvc_get_gamma(_deviceHandle, &readBack, UVC_GET_CUR);
     if (result < 0)
     {
         std::cerr << "Warning: Set gamma to " << value
@@ -563,7 +701,7 @@ bool UvcCameraProvider::SetAutoWhiteBalanceTemperature(bool enable)
         return false;
     }
 
-    int result = uvc_set_ae_mode(_deviceHandle, enable ? 8 : 1);
+    uvc_error_t result = uvc_set_ae_mode(_deviceHandle, enable ? 8 : 1);
     if (result < 0)
     {
         std::cerr << "Warning: Set auto white balance temperature failed\n";
@@ -571,8 +709,8 @@ bool UvcCameraProvider::SetAutoWhiteBalanceTemperature(bool enable)
         return false;
     }
 
-    int readBack = 0;
-    result = uvc_get_ae_mode(_deviceHandle, &readBack);
+    uint8_t readBack = 0;
+    result = uvc_get_ae_mode(_deviceHandle, &readBack, UVC_GET_CUR);
     if (result < 0)
     {
         std::cerr << "Warning: Set auto white balance temperature to " << (enable ? "true" : "false")
@@ -603,7 +741,14 @@ int UvcCameraProvider::GetBrightness(int* value)
         return -1;
     }
 
-    return uvc_get_brightness(_deviceHandle, value);
+    int16_t raw = 0;
+    int result = uvc_get_brightness(_deviceHandle, &raw, UVC_GET_CUR);
+    if (result == 0)
+    {
+        *value = static_cast<int>(raw);
+    }
+
+    return result;
 }
 
 int UvcCameraProvider::GetWhiteBalanceTemperature(int* value)
@@ -615,7 +760,14 @@ int UvcCameraProvider::GetWhiteBalanceTemperature(int* value)
         return -1;
     }
 
-    return uvc_get_white_balance_temperature(_deviceHandle, value);
+    uint16_t raw = 0;
+    int result = uvc_get_white_balance_temperature(_deviceHandle, &raw, UVC_GET_CUR);
+    if (result == 0)
+    {
+        *value = static_cast<int>(raw);
+    }
+
+    return result;
 }
 
 int UvcCameraProvider::GetBacklightCompensation(int* value)
@@ -627,7 +779,14 @@ int UvcCameraProvider::GetBacklightCompensation(int* value)
         return -1;
     }
 
-    return uvc_get_backlight_compensation(_deviceHandle, value);
+    uint16_t raw = 0;
+    int result = uvc_get_backlight_compensation(_deviceHandle, &raw, UVC_GET_CUR);
+    if (result == 0)
+    {
+        *value = static_cast<int>(raw);
+    }
+
+    return result;
 }
 
 int UvcCameraProvider::GetPowerLineFrequency(int* value)
@@ -639,7 +798,14 @@ int UvcCameraProvider::GetPowerLineFrequency(int* value)
         return -1;
     }
 
-    return uvc_get_power_line_frequency(_deviceHandle, value);
+    uint8_t raw = 0;
+    int result = uvc_get_power_line_frequency(_deviceHandle, &raw, UVC_GET_CUR);
+    if (result == 0)
+    {
+        *value = static_cast<int>(raw);
+    }
+
+    return result;
 }
 
 int UvcCameraProvider::GetSaturation(int* value)
@@ -651,7 +817,14 @@ int UvcCameraProvider::GetSaturation(int* value)
         return -1;
     }
 
-    return uvc_get_saturation(_deviceHandle, value);
+    uint16_t raw = 0;
+    int result = uvc_get_saturation(_deviceHandle, &raw, UVC_GET_CUR);
+    if (result == 0)
+    {
+        *value = static_cast<int>(raw);
+    }
+
+    return result;
 }
 
 int UvcCameraProvider::GetSharpness(int* value)
@@ -663,7 +836,14 @@ int UvcCameraProvider::GetSharpness(int* value)
         return -1;
     }
 
-    return uvc_get_sharpness(_deviceHandle, value);
+    uint16_t raw = 0;
+    int result = uvc_get_sharpness(_deviceHandle, &raw, UVC_GET_CUR);
+    if (result == 0)
+    {
+        *value = static_cast<int>(raw);
+    }
+
+    return result;
 }
 
 int UvcCameraProvider::GetContrast(int* value)
@@ -675,7 +855,14 @@ int UvcCameraProvider::GetContrast(int* value)
         return -1;
     }
 
-    return uvc_get_contrast(_deviceHandle, value);
+    uint16_t raw = 0;
+    int result = uvc_get_contrast(_deviceHandle, &raw, UVC_GET_CUR);
+    if (result == 0)
+    {
+        *value = static_cast<int>(raw);
+    }
+
+    return result;
 }
 
 int UvcCameraProvider::GetHue(int* value)
@@ -687,7 +874,14 @@ int UvcCameraProvider::GetHue(int* value)
         return -1;
     }
 
-    return uvc_get_hue(_deviceHandle, value);
+    int16_t raw = 0;
+    int result = uvc_get_hue(_deviceHandle, &raw, UVC_GET_CUR);
+    if (result == 0)
+    {
+        *value = static_cast<int>(raw);
+    }
+
+    return result;
 }
 
 int UvcCameraProvider::GetGamma(int* value)
@@ -699,7 +893,14 @@ int UvcCameraProvider::GetGamma(int* value)
         return -1;
     }
 
-    return uvc_get_gamma(_deviceHandle, value);
+    uint16_t raw = 0;
+    int result = uvc_get_gamma(_deviceHandle, &raw, UVC_GET_CUR);
+    if (result == 0)
+    {
+        *value = static_cast<int>(raw);
+    }
+
+    return result;
 }
 
 int UvcCameraProvider::GetAutoWhiteBalanceTemperature(int* value)
@@ -711,8 +912,8 @@ int UvcCameraProvider::GetAutoWhiteBalanceTemperature(int* value)
         return -1;
     }
 
-    int mode;
-    int result = uvc_get_ae_mode(_deviceHandle, &mode);
+    uint8_t mode = 0;
+    int result = uvc_get_ae_mode(_deviceHandle, &mode, UVC_GET_CUR);
     if (result == 0)
     {
         *value = (mode == 8) ? 1 : 0;

@@ -33,6 +33,11 @@ if host_machine.system() == 'darwin'
     )
 else
     uvc_dep = dependency('libuvc', version: '>=0.0.6', required: false)
+    if not uvc_dep.found()
+        # Fall back to vendored libuvc (pinned git master, see subprojects/libuvc.wrap)
+        uvc_sub = subproject('libuvc', required: true)
+        uvc_dep = uvc_sub.get_variable('uvc_dep')
+    endif
 
     src_files = files(
         'src/render/Renderer.cpp',
@@ -43,18 +48,6 @@ else
         'src/camera/UvcCameraProvider.cpp',
         'src/main.cpp',
     )
-endif
-
-if not sdl2_dep.found()
-    sdl2_sub = subproject('sdl2')
-    sdl2_dep = sdl2_sub.get_variable('sdl2_dep')
-endif
-
-if host_machine.system() != 'darwin'
-    if not uvc_dep.found()
-        uvc_sub = subproject('libuvc')
-        uvc_dep = uvc_sub.get_variable('uvc_dep')
-    endif
 endif
 
 if host_machine.system() == 'darwin'

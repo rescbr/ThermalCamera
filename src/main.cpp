@@ -294,6 +294,7 @@ int main(int argc, char** argv)
                         } catch (const std::exception& e) {
                             // Connection failed, wait and retry
                             if (sharedState->isRunning) {
+                                std::cerr << "Connection failed: " << e.what() << " - retrying in 1s\n";
                                 // If auto-detect, clear the path to force re-scan next loop
                                 // This handles Location ID changes on macOS
                                 if (sharedState->isAutoDetect) {

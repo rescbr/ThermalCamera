@@ -104,7 +104,12 @@ Prepare and publish release packages for Linux and macOS.
 
 ### Task 8.3: macOS Release Build
 
-**Status**: Completed
+**Status**: Partially Completed
+
+> **ERRATUM (documentation audit 2026-09-06)**: The .dmg creation and Info.plist verification
+> checkmarks below are **not verifiable from the repository** — no `.dmg` artifact or committed
+> `.plist` file exists. Only the .app bundle target (`meson.build`, `macos/Info.plist.in`) is
+> confirmed. Treat the DMG/signing/notarization items as not done.
 
 **Description**: Build and package macOS release.
 

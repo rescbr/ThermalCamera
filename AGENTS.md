@@ -4,7 +4,7 @@ This document provides instructions for agents working on the ThermalCamera proj
 
 ## Project Overview
 
-ThermalCamera is a cross-platform C++14 application that:
+ThermalCamera is a cross-platform C++17 application that:
 - Captures thermal camera video via platform-specific backends (libuvc on Linux, AVFoundation on macOS)
 - Processes thermal data (Kelvin → Celsius/Fahrenheit)
 - Renders frames with SDL 2.x
@@ -38,20 +38,18 @@ ThermalCamera/
 ├── CODING_GUIDELINES.md          # Coding standards
 ├── AGENTS.md                     # This file
 ├── plans/                        # Implementation plans
-│   ├── phase1-foundation.md
-│   ├── phase1a-macos.md          # macOS-specific implementation
-│   ├── phase2-thermal-processing.md
-│   ├── phase3-colormaps-rendering.md
-│   ├── phase4-threading.md
-│   ├── phase5-interaction.md
-│   ├── phase6-polish.md          # Phase 6 overview
-│   ├── phase6a-common.md        # Common polish tasks
-│   ├── phase6b-macos.md         # macOS-specific polish
 │   ├── phase6c-linux.md         # Linux-specific polish
 │   ├── phase7-testing.md         # End-to-end testing
-│   └── phase8-release.md         # Release preparation
+│   ├── phase8-release.md         # Release preparation
+│   ├── phase9-cpu-optimization.md # CPU performance optimization
+│   └── deviation.md              # Documented deviations from reference design
+├── subprojects/
+│   └── libuvc.wrap              # Vendored libuvc (git master pin, cmake subproject)
 ├── src/
 │   ├── main.cpp
+│   ├── Error.hpp                # Error handling utilities
+│   ├── Profile.hpp              # Performance profiling utilities
+│   ├── version.hpp              # Version constants
 │   ├── FrameBuffer.hpp           # Double buffering implementation
 │   ├── camera/                   # Platform-specific camera implementations
 │   │   ├── ICamera.hpp           # Camera interface
@@ -87,9 +85,12 @@ ThermalCamera/
 │   │   ├── test_thermal.cpp
 │   │   └── test_renderer.cpp
 │   └── colormaps.hpp
-└── subprojects/
-    ├── sdl2
-    └── libuvc
+├── spec/                         # Architecture and specification docs
+│   ├── architecture.md
+│   └── specification.md
+├── macos/                        # macOS bundle metadata (Info.plist.in)
+├── fonts/                        # Font sources and conversion tools
+└── PERF_WORK.md                  # CPU optimization work log
 ```
 
 ## Agent Workflow
@@ -115,7 +116,7 @@ When working on ThermalCamera project, agents should:
 6. **Follow Coding Standards**: Adhere to CODING_GUIDELINES.md conventions.
 7. **Document Changes**: Update relevant documentation when adding features.
 8. **Architectural Reasoning**: When updating `spec/architecture.md`, explicitly explain the *why* (reasoning) behind decisions, especially if they arose from user discussions.
-9. **Handle Dependencies**: Use Meson subprojects for external libraries.
+9. **Handle Dependencies**: SDL2 is a system dependency (install via package manager). libuvc is optional system-wide; when missing, Meson builds the vendored git snapshot from `subprojects/libuvc.wrap` (pinned to libuvc git master, cmake subproject).
 10. **Platform-Specific Code**: Keep platform-specific code in separate files (.mm for macOS, .cpp for Linux).
 
 ## Key Technology Stack

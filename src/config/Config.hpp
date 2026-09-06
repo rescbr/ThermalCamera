@@ -45,11 +45,7 @@ public:
     }
 
     void SetDefaults() {
-        #ifdef __APPLE__
-        _devicePath = "";
-#else
-        _devicePath = "/dev/video0";
-#endif
+        _devicePath = ""; // Auto-detect thermal camera on all platforms
         _inputFile = "";
         _scaleFactor = 1; // Default 1X
         _fullscreen = false;
