@@ -544,3 +544,15 @@ macOS ARM compiles the scalar reference.
   SDL fullscreen toggle - launcher uses swaymsg fullscreen instead).
 - Note: on the in-order A55 the compiler auto-vectorizes the scalar reference
   well; the win there is correctness + the memcpy extraction, not raw SIMD.
+
+### Phase 9d: Rocknix console display polish (2026-09-06)
+
+- Renderer now uses SDL_RenderSetLogicalSize(targetW, targetH): image and HUD
+  auto-scale/letterbox to any window size. Replaces the manual per-frame
+  viewport letterbox whose HUD coordinates broke in fullscreen.
+- Window resize is issued only when the desired size changes; SDL never
+  force-exits compositor-driven fullscreen (both previously fought sway every
+  frame, leaving the window stuck at 512x384 on the console).
+- Launcher (/storage/thermalcamera/launch.sh) polls sway tree for the window,
+  then focus + fullscreen enable via sway IPC. SDL's own fullscreen toggle
+  SIGTRAPs in the Mali blob - avoid it on RK3566.

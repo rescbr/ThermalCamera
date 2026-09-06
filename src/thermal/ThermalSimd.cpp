@@ -269,30 +269,8 @@ namespace Thermal
             outMax = tailMax;
             outSum = sum;
 
-            // Single SIMD pass recovering BOTH first-occurrence indices
-            outMinIndex = 0;
-            outMaxIndex = 0;
-            const uint16x8_t tMin = vdupq_n_u16(tailMin);
-            const uint16x8_t tMax = vdupq_n_u16(tailMax);
-            for (size_t j = 0; j < pixelCount && (outMinIndex == 0 || outMaxIndex == 0); j += 8)
-            {
-                const uint16x8_t v = vld1q_u16(data + j);
-                const uint64x2_t eqMin = vreinterpretq_u64_u16(vceqq_u16(v, tMin));
-                const uint64x2_t eqMax = vreinterpretq_u64_u16(vceqq_u16(v, tMax));
-
-                if (outMinIndex == 0 && (vgetq_lane_u64(eqMin, 0) | vgetq_lane_u64(eqMin, 1)) != 0)
-                {
-                    const size_t lim = j + 8 <= pixelCount ? j + 8 : pixelCount;
-                    for (size_t k = j; k < lim; ++k)
-                        if (data[k] == tailMin) { outMinIndex = k; break; }
-                }
-                if (outMaxIndex == 0 && (vgetq_lane_u64(eqMax, 0) | vgetq_lane_u64(eqMax, 1)) != 0)
-                {
-                    const size_t lim = j + 8 <= pixelCount ? j + 8 : pixelCount;
-                    for (size_t k = j; k < lim; ++k)
-                        if (data[k] == tailMax) { outMaxIndex = k; break; }
-                }
-            }
+            outMinIndex = FirstIndexOf(data, pixelCount, tailMin);
+            outMaxIndex = FirstIndexOf(data, pixelCount, tailMax);
         }
 
         // ------------------------------------------------------------------
@@ -471,8 +449,31 @@ namespace Thermal
             outMin = minV;
             outMax = maxV;
             outSum = sum;
-            outMinIndex = FirstIndexOf(data, pixelCount, minV);
-            outMaxIndex = FirstIndexOf(data, pixelCount, maxV);
+
+            // Single SIMD pass recovering BOTH first-occurrence indices
+            outMinIndex = 0;
+            outMaxIndex = 0;
+            const uint16x8_t tMin = vdupq_n_u16(minV);
+            const uint16x8_t tMax = vdupq_n_u16(maxV);
+            for (size_t j = 0; j < pixelCount && (outMinIndex == 0 || outMaxIndex == 0); j += 8)
+            {
+                const uint16x8_t v = vld1q_u16(data + j);
+                const uint64x2_t eqMin = vreinterpretq_u64_u16(vceqq_u16(v, tMin));
+                const uint64x2_t eqMax = vreinterpretq_u64_u16(vceqq_u16(v, tMax));
+
+                if (outMinIndex == 0 && (vgetq_lane_u64(eqMin, 0) | vgetq_lane_u64(eqMin, 1)) != 0)
+                {
+                    const size_t lim = j + 8 <= pixelCount ? j + 8 : pixelCount;
+                    for (size_t k = j; k < lim; ++k)
+                        if (data[k] == minV) { outMinIndex = k; break; }
+                }
+                if (outMaxIndex == 0 && (vgetq_lane_u64(eqMax, 0) | vgetq_lane_u64(eqMax, 1)) != 0)
+                {
+                    const size_t lim = j + 8 <= pixelCount ? j + 8 : pixelCount;
+                    for (size_t k = j; k < lim; ++k)
+                        if (data[k] == maxV) { outMaxIndex = k; break; }
+                }
+            }
         }
 
         static void ColormapLookupNeon(

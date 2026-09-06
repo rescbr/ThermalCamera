@@ -136,27 +136,36 @@ namespace Render
             }
         }
 
-        // Check fullscreen state
+        // Check fullscreen state - only apply config-initiated transitions.
+        // Never force-exit compositor-driven fullscreen (e.g. sway fullscreen
+        // on the console): SDL would toggle it back off every frame.
         uint32_t flags = SDL_GetWindowFlags(_window);
         bool isFullscreen = (flags & SDL_WINDOW_FULLSCREEN_DESKTOP) != 0;
-        if (_config.GetFullscreen() != isFullscreen) {
-            SDL_SetWindowFullscreen(_window, _config.GetFullscreen() ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
-            if (!_config.GetFullscreen()) {
-                // Restore size if exiting fullscreen
-                SDL_SetWindowSize(_window, targetW, targetH);
-            }
+        if (_config.GetFullscreen() && !isFullscreen) {
+            SDL_SetWindowFullscreen(_window, SDL_WINDOW_FULLSCREEN_DESKTOP);
         } else if (!_config.GetFullscreen()) {
-            // Ensure window size matches scale factor if not fullscreen
-            // (In case user resized window manually or scale changed)
-            int w, h;
-            SDL_GetWindowSize(_window, &w, &h);
-            if (w != targetW || h != targetH) {
-                SDL_SetWindowSize(_window, targetW, targetH);
+            // Ensure window size matches scale factor, but only when the desired
+            // size actually changes - reissuing SetWindowSize every frame fights
+            // compositor-driven resizes (e.g. sway fullscreen on the console).
+            static int lastDesiredW = 0, lastDesiredH = 0;
+            if (lastDesiredW != targetW || lastDesiredH != targetH) {
+                int w, h;
+                SDL_GetWindowSize(_window, &w, &h);
+                if (w != targetW || h != targetH) {
+                    SDL_SetWindowSize(_window, targetW, targetH);
+                }
+                lastDesiredW = targetW;
+                lastDesiredH = targetH;
             }
         }
 
 
         // --- Rendering Steps ---
+
+        // Use a logical coordinate system of targetW x targetH: SDL scales and
+        // letterboxes the rendering automatically, and the HUD can always draw
+        // in "scaled image" coordinates regardless of the real window size.
+        SDL_RenderSetLogicalSize(_renderer, targetW, targetH);
 
         // Step 1: Lock Texture to write pixels directly
         void* pixels;
@@ -176,67 +185,15 @@ namespace Render
         SDL_UnlockTexture(_texture);
 
         // Step 3: Render texture to screen (GPU Scaling)
+        SDL_SetRenderDrawColor(_renderer, 0, 0, 0, 255);
         SDL_RenderClear(_renderer);
-        
-        // Calculate letterbox/pillarbox viewport
-        int winW, winH;
-        SDL_GetRendererOutputSize(_renderer, &winW, &winH);
-        
-        float scaleX = (float)winW / frame._width;
-        float scaleY = (float)winH / frame._height;
-        float minScale = (scaleX < scaleY) ? scaleX : scaleY;
-        
-        int viewW = (int)(frame._width * minScale);
-        int viewH = (int)(frame._height * minScale);
-        
-        SDL_Rect viewportRect;
-        viewportRect.x = (winW - viewW) / 2;
-        viewportRect.y = (winH - viewH) / 2;
-        viewportRect.w = viewW;
-        viewportRect.h = viewH;
-        
-        // Render texture to fit the viewport
-        SDL_RenderCopy(_renderer, _texture, nullptr, &viewportRect);
+        SDL_RenderCopy(_renderer, _texture, nullptr, nullptr);
         
         // Step 4: Render HUD
         if (_showHud) {
             PROFILE_SCOPE("RenderHUD");
-            
-        // Transform mouse coordinates to Logical Space for the HUD
-        // Use actual rendered image size, not configured scale
-        int realMouseX = _mouseX;
-        int realMouseY = _mouseY;
-
-        if (viewportRect.w > 0 && viewportRect.h > 0 && minScale > 0) {
-            // Map Screen -> Viewport-Relative -> Logical (based on actual rendered size)
-            int relativeX = _mouseX - viewportRect.x;
-            int relativeY = _mouseY - viewportRect.y;
-
-            // Clamp to destRect bounds
-            if (relativeX >= 0 && relativeX < viewportRect.w && relativeY >= 0 && relativeY < viewportRect.h) {
-                // Map from rendered image size to thermal frame size
-                _mouseX = (relativeX * frame._width) / viewportRect.w;
-                _mouseY = (relativeY * frame._height) / viewportRect.h;
-            } else {
-                // Mouse is outside rendered image area
-                _mouseX = -1;
-                _mouseY = -1;
-            }
-        } else {
-            _mouseX = -1;
-            _mouseY = -1;
-        }
-
             RenderHUD(frame);
-            
-            // Restore mouse coordinates
-            _mouseX = realMouseX;
-            _mouseY = realMouseY;
         }
-
-        // Restore Renderer State for next frame / other operations
-        SDL_RenderSetScale(_renderer, 1.0f, 1.0f);
-        SDL_RenderSetViewport(_renderer, nullptr);
 
         SDL_RenderPresent(_renderer);
         
@@ -555,7 +512,7 @@ namespace Render
 
         // Bottom: Controls hint
         if (height > 100) {
-            DrawText("[H] Toggle HUD  [Space] Freeze  [Q] Quit", margin, height - 12 * fs);
+            DrawText("[H]UD  [Space] Freeze  [Q] Quit", margin, height - 12 * fs);
         }
     }
 
