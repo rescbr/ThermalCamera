@@ -196,31 +196,12 @@ namespace Render
         // area is cropped away instead.
         const int maxZoom = std::max(1, std::min(frame._width, frame._height) / 48);
         if (_zoom > maxZoom) _zoom = maxZoom;
-        int cropW, cropH;
-        if (_zoom <= 1)
-        {
-            // 1x: whole frame, pillarboxed on wider windows
-            cropW = frame._width;
-            cropH = frame._height;
-        }
-        else
-        {
-            // Zoomed: crop shrinks around the probe and is shaped to the
-            // window aspect, filling the screen with no pillarbox
-            cropW = std::max(1, frame._width / _zoom);
-            cropH = std::max(1, frame._height / _zoom);
-            const double winAspect = (double)_winW / std::max(1, _winH);
-            if ((double)cropW / cropH > winAspect)
-            {
-                cropW = std::max(1, (int)(cropH * winAspect)); // too wide: trim sides
-            }
-            else
-            {
-                cropH = std::max(1, (int)(cropW / winAspect)); // too tall: trim top/bottom
-            }
-            cropW = std::min(cropW, frame._width);
-            cropH = std::min(cropH, frame._height);
-        }
+
+        // Zoom N shows a frame/N crop centered on the probe - same shape as
+        // the full frame, so 2x is a true 2x magnification over 1x, still
+        // pillarboxed the same way.
+        const int cropW = std::max(1, frame._width / _zoom);
+        const int cropH = std::max(1, frame._height / _zoom);
 
         // Probe is stored in frame coordinates; default to frame center
         if (!_probeActive)
@@ -235,25 +216,12 @@ namespace Render
         _cropY = std::clamp(_probeY - cropH / 2, 0, frame._height - cropH);
 
         // Crop aspect matches the window aspect: fill it completely
-        // 1x: aspect-correct letterbox. Zoomed: crop aspect already matches
-        // the window, so it fills completely.
-        float fit;
-        if (_zoom <= 1)
-        {
-            fit = std::min((float)_winW / cropW, (float)_winH / cropH);
-            _viewW = (int)(cropW * fit);
-            _viewH = (int)(cropH * fit);
-            _viewX = (_winW - _viewW) / 2;
-            _viewY = (_winH - _viewH) / 2;
-        }
-        else
-        {
-            fit = (float)_winW / cropW;
-            _viewX = 0;
-            _viewY = 0;
-            _viewW = _winW;
-            _viewH = _winH;
-        }
+        // Aspect-correct letterbox at every zoom level
+        const float fit = std::min((float)_winW / cropW, (float)_winH / cropH);
+        _viewW = (int)(cropW * fit);
+        _viewH = (int)(cropH * fit);
+        _viewX = (_winW - _viewW) / 2;
+        _viewY = (_winH - _viewH) / 2;
         _viewFit = fit;
 
         SDL_SetRenderDrawColor(_renderer, 0, 0, 0, 255);
