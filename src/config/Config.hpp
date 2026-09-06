@@ -50,7 +50,7 @@ public:
         _scaleFactor = 1; // Default 1X
         _fullscreen = false;
         _colormapIndex = 0; // Default
-        _useCelsius = false; // Default Fahrenheit
+        _useCelsius = true; // Default Celsius (metric)
         _rotation = 0;
         _freezeFrame = false;
         _threadCount = 3;
@@ -82,7 +82,7 @@ public:
             }
         }
         
-        if (cmd.exist("celsius")) _useCelsius = true;
+        if (cmd.exist("fahrenheit")) _useCelsius = false;
         if (cmd.exist("quiet")) _verbose = false;
         
         if (cmd.exist("threads")) {

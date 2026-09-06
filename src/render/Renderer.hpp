@@ -40,7 +40,8 @@ namespace Render
 
         // Font rendering helpers
         void InitializeFont();
-        void DrawText(const std::string& text, int x, int y, uint32_t color = 0xFFFFFFFF);
+        void DrawText(const std::string& text, int x, int y, uint32_t color = 0xFFFFFFFF, bool bold = false);
+        int TextWidth(const std::string& text, bool bold = false) const;
 
         Config::Config& _config;
 
@@ -50,7 +51,9 @@ namespace Render
         
         // Font Atlas
         SDL_Texture* _fontTexture;
+        SDL_Texture* _fontTextureBold;
         std::vector<SDL_Rect> _glyphRects;
+        std::vector<SDL_Rect> _glyphRectsBold;
 
         // Buffers
         // std::vector<uint32_t> _pixelBuffer; // Removed
@@ -62,6 +65,7 @@ namespace Render
         // int _windowHeight; // Remove if not needed, or keep for init
         std::atomic<bool> _isRunning;
         bool _showHud;
+        int _fontScale = 1; // HUD text multiplier (tracks window scale)
         
         // Mouse interaction
         int _mouseX = -1;

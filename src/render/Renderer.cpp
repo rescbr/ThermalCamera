@@ -2,7 +2,8 @@
 #include "../Error.hpp"
 #include "../Profile.hpp"
 #include "../colormaps.hpp"
-#include "../fonts/EspySans_10.h"
+#include "../fonts/EspySans_14.h"
+#include "../fonts/EspySansBold_14.h"
 #include <iostream>
 #include <stdexcept>
 #include <cstring>
@@ -38,6 +39,7 @@ namespace Render
         , _renderer(nullptr)
         , _texture(nullptr)
         , _fontTexture(nullptr)
+        , _fontTextureBold(nullptr)
         , _windowWidth(0)
         , _isRunning(false)
         , _showHud(true)
@@ -68,6 +70,12 @@ namespace Render
             _fontTexture = nullptr;
         }
 
+        if (_fontTextureBold)
+        {
+            SDL_DestroyTexture(_fontTextureBold);
+            _fontTextureBold = nullptr;
+        }
+
         if (_renderer)
         {
             SDL_DestroyRenderer(_renderer);
@@ -94,6 +102,7 @@ namespace Render
 
         // --- Handle Resizing / Fullscreen ---
         int scale = _config.GetScaleFactor();
+        _fontScale = (scale > 2) ? 2 : scale; // HUD text grows with window, capped at 2x (14pt base)
         int targetW = frame._width * scale;
         int targetH = frame._height * scale;
 
@@ -253,7 +262,6 @@ namespace Render
             maxK = minK + 1;
         }
 
-        int range = maxK - minK;
         int cmapIdx = _config.GetColormapIndex();
         if (cmapIdx < 0) cmapIdx = 0;
         const uint32_t* palette = _packedColormaps[cmapIdx % COLORMAP_COUNT].data();
@@ -261,8 +269,10 @@ namespace Render
         const uint16_t* input = frame._data.data();
         int width = frame._width;
         int height = frame._height;
-        
+
         // Fast path for pitch == width * 4 (Contiguous)
+        int range = maxK - minK;
+
         if (pitch == width * 4)
         {
             uint32_t* outputBuffer = static_cast<uint32_t*>(pixels);
@@ -275,13 +285,11 @@ namespace Render
                 if (val < minK) val = minK;
                 if (val > maxK) val = maxK;
 
-                // Map to 0-255 using integer math
                 uint32_t delta = val - minK;
                 int index = (delta * 255) / range;
                 if (index < 0) index = 0;
                 if (index > 255) index = 255;
 
-                // Direct lookup from pre-packed ARGB palette
                 outputBuffer[i] = palette[index];
             }
         }
@@ -297,7 +305,7 @@ namespace Render
                     uint16_t val = input[y * width + x];
                     if (val < minK) val = minK;
                     if (val > maxK) val = maxK;
-                    
+
                     uint32_t delta = val - minK;
                     int index = (delta * 255) / range;
                     if (index < 0) index = 0;
@@ -329,74 +337,65 @@ namespace Render
         }
     }
 
-    void Renderer::InitializeFont()
+    // Builds a horizontal glyph atlas texture from a generated EspySans font namespace.
+    template <typename GlyphT>
+    SDL_Texture* BuildFontAtlas(SDL_Renderer* renderer, const GlyphT (&glyphs)[256], std::vector<SDL_Rect>& glyphRects)
     {
-        // EspySans 10pt is a bitmap font.
-        // We will create a texture atlas where all glyphs are laid out horizontally.
-        // There are 256 glyphs. Max width is 13, max height is 13.
-        // Let's allocate a surface wide enough for all 256 chars.
-        
         int totalWidth = 0;
         int maxHeight = 0;
-        
-        _glyphRects.resize(256);
-        
+
+        glyphRects.resize(256);
+
         // First pass: calculate dimensions
         for (int i = 0; i < 256; ++i)
         {
-            const auto& glyph = Fonts::EspySans_10::glyphs[i];
+            const auto& glyph = glyphs[i];
             if (!glyph.bitmap) {
                 // For non-renderable chars (like space), we still need an advance but no bitmap
-                // For space (0x20), advance is 3.
-                _glyphRects[i] = { totalWidth, 0, 0, 0 }; // No texture rect
+                glyphRects[i] = { totalWidth, 0, 0, 0 }; // No texture rect
                 continue;
             }
-            
-            _glyphRects[i].x = totalWidth;
-            _glyphRects[i].y = 0;
-            _glyphRects[i].w = glyph.width;
-            _glyphRects[i].h = glyph.height;
-            
+
+            glyphRects[i].x = totalWidth;
+            glyphRects[i].y = 0;
+            glyphRects[i].w = glyph.width;
+            glyphRects[i].h = glyph.height;
+
             totalWidth += glyph.width + 1; // +1 for padding
             if (glyph.height > maxHeight) maxHeight = glyph.height;
         }
-        
-        if (totalWidth == 0) return; // Should not happen
-        
-        // Create surface
-        // Use ARGB8888 for simplicity
+
+        if (totalWidth == 0) return nullptr;
+
         SDL_Surface* surface = SDL_CreateRGBSurfaceWithFormat(0, totalWidth, maxHeight, 32, SDL_PIXELFORMAT_ARGB8888);
         if (!surface)
         {
-             std::cerr << "Failed to create font surface: " << SDL_GetError() << std::endl;
-             return;
+            std::cerr << "Failed to create font surface: " << SDL_GetError() << std::endl;
+            return nullptr;
         }
-        
-        // Clear to transparent
+
         std::memset(surface->pixels, 0, surface->pitch * surface->h);
-        
+
         uint32_t* pixels = (uint32_t*)surface->pixels;
         int pitch = surface->pitch / 4; // in uint32 pixels
-        
-        // Second pass: Draw glyphs to surface
+
+        // Second pass: draw glyphs to surface
         for (int i = 0; i < 256; ++i)
         {
-            const auto& glyph = Fonts::EspySans_10::glyphs[i];
+            const auto& glyph = glyphs[i];
             if (!glyph.bitmap) continue;
-            
-            const SDL_Rect& rect = _glyphRects[i];
-            
-            // Draw bitmap
+
+            const SDL_Rect& rect = glyphRects[i];
+
             int bytesPerRow = (glyph.width + 7) / 8;
-            
+
             for (int r = 0; r < glyph.height; ++r) {
                 for (int c = 0; c < glyph.width; ++c) {
                     int byteIndex = r * bytesPerRow + (c / 8);
-                    int bitIndex = 7 - (c % 8); 
-                    
+                    int bitIndex = 7 - (c % 8);
+
                     if (glyph.bitmap[byteIndex] & (1 << bitIndex)) {
-                        // Set pixel to white (we will color modulate the texture)
-                        // ARGB: Full Alpha, Full White
+                        // Set pixel to white (color modulation is applied at draw time)
                         int surfX = rect.x + c;
                         int surfY = rect.y + r;
                         pixels[surfY * pitch + surfX] = 0xFFFFFFFF;
@@ -404,64 +403,107 @@ namespace Render
                 }
             }
         }
-        
-        // Create texture
-        _fontTexture = SDL_CreateTextureFromSurface(_renderer, surface);
+
+        SDL_Texture* texture = SDL_CreateTextureFromSurface(renderer, surface);
         SDL_FreeSurface(surface);
-        
-        if (!_fontTexture) {
-             std::cerr << "Failed to create font texture: " << SDL_GetError() << std::endl;
-             return;
+
+        if (!texture) {
+            std::cerr << "Failed to create font texture: " << SDL_GetError() << std::endl;
+            return nullptr;
         }
-        
-        // Set blend mode to blend so alpha works
-        SDL_SetTextureBlendMode(_fontTexture, SDL_BLENDMODE_BLEND);
+
+        SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND);
+        return texture;
     }
 
-    void Renderer::DrawText(const std::string& text, int x, int y, uint32_t color)
+    void Renderer::InitializeFont()
     {
-        if (!_fontTexture) return;
-        
+        // EspySans regular for labels, bold for temperature readouts
+        _fontTexture = BuildFontAtlas(_renderer, Fonts::EspySans_14::glyphs, _glyphRects);
+        _fontTextureBold = BuildFontAtlas(_renderer, Fonts::EspySans_Bold_14::glyphs, _glyphRectsBold);
+    }
+
+    void Renderer::DrawText(const std::string& text, int x, int y, uint32_t color, bool bold)
+    {
+        SDL_Texture* texture = bold ? _fontTextureBold : _fontTexture;
+        if (!texture) return;
+
         // Set texture color modulation
         uint8_t a = (color >> 24) & 0xFF;
         uint8_t r = (color >> 16) & 0xFF;
         uint8_t g = (color >> 8) & 0xFF;
         uint8_t b = (color & 0xFF);
-        
-        SDL_SetTextureColorMod(_fontTexture, r, g, b);
-        SDL_SetTextureAlphaMod(_fontTexture, a);
-        
+
+        SDL_SetTextureColorMod(texture, r, g, b);
+        SDL_SetTextureAlphaMod(texture, a);
+
+        int fs = _fontScale;
         int pen_x = x;
         int pen_y = y;
-        
+
         for (char c : text) {
             uint8_t idx = static_cast<uint8_t>(c);
-            const auto& glyph = Fonts::EspySans_10::glyphs[idx];
-            
-            if (glyph.bitmap) {
-                const SDL_Rect& srcRect = _glyphRects[idx];
-                
-                SDL_Rect dstRect;
-                dstRect.x = pen_x + glyph.x_offset;
-                dstRect.y = pen_y - (glyph.y_offset + glyph.height);
-                dstRect.w = srcRect.w;
-                dstRect.h = srcRect.h;
-                
-                SDL_RenderCopy(_renderer, _fontTexture, &srcRect, &dstRect);
+
+            int yOff, gh, advance;
+            bool hasBitmap;
+            if (bold) {
+                const auto& glyph = Fonts::EspySans_Bold_14::glyphs[idx];
+                yOff = glyph.y_offset; gh = glyph.height;
+                advance = glyph.advance; hasBitmap = glyph.bitmap != nullptr;
+
+                if (hasBitmap) {
+                    const SDL_Rect& srcRect = _glyphRectsBold[idx];
+                    SDL_Rect dstRect;
+                    dstRect.x = pen_x + glyph.x_offset * fs;
+                    dstRect.y = pen_y - (yOff + gh) * fs;
+                    dstRect.w = srcRect.w * fs;
+                    dstRect.h = srcRect.h * fs;
+                    SDL_RenderCopy(_renderer, texture, &srcRect, &dstRect);
+                }
+            } else {
+                const auto& glyph = Fonts::EspySans_14::glyphs[idx];
+                yOff = glyph.y_offset; gh = glyph.height;
+                advance = glyph.advance; hasBitmap = glyph.bitmap != nullptr;
+
+                if (hasBitmap) {
+                    const SDL_Rect& srcRect = _glyphRects[idx];
+                    SDL_Rect dstRect;
+                    dstRect.x = pen_x + glyph.x_offset * fs;
+                    dstRect.y = pen_y - (yOff + gh) * fs;
+                    dstRect.w = srcRect.w * fs;
+                    dstRect.h = srcRect.h * fs;
+                    SDL_RenderCopy(_renderer, texture, &srcRect, &dstRect);
+                }
             }
-            
-            pen_x += glyph.advance;
+
+            pen_x += advance * fs;
         }
+    }
+
+    int Renderer::TextWidth(const std::string& text, bool bold) const
+    {
+        const auto& regular = Fonts::EspySans_14::glyphs;
+        const auto& boldGlyphs = Fonts::EspySans_Bold_14::glyphs;
+        int w = 0;
+        for (char c : text) {
+            w += (bold ? boldGlyphs[static_cast<uint8_t>(c)].advance
+                       : regular[static_cast<uint8_t>(c)].advance);
+        }
+        return w * _fontScale;
     }
 
     void Renderer::RenderHUD(const Thermal::ThermalFrame& frame)
     {
         int scale = _config.GetScaleFactor();
+        int fs = _fontScale; // font scale (bold 14pt base)
         int width = frame._width * scale;
         int height = frame._height * scale;
         int centerX = width / 2;
         int centerY = height / 2;
         int size = 10 * scale;
+        int margin = 10 * fs;
+        int lineStep = 19 * fs;
+        int topBase = 24 * fs; // baseline of first HUD line
 
         // Draw crosshair at center
         SDL_SetRenderDrawColor(_renderer, 255, 255, 255, 255);
@@ -479,31 +521,40 @@ namespace Render
 
         // Top Left: FPS and Temps
         snprintf(buffer, sizeof(buffer), "FPS: %d", _currentFPS);
-        DrawText(buffer, 10, 20, 0xFFFFFFFF);
+        DrawText(buffer, margin, topBase, 0xFFFFFFFF);
         
-        DrawText(std::string("Min: ") + formatTemp(frame._min._celsius, frame._min._fahrenheit), 10, 35, 0xFF00FFFF); // Cyan
+        // Labels in regular, temperature values in bold
+        auto drawLabeledTemp = [&](const char* label, const char* value, int x, int y, uint32_t color) {
+            DrawText(label, x, y, 0xFFFFFFFF);
+            DrawText(value, x + TextWidth(label), y, color, /*bold=*/true);
+        };
 
-        DrawText(std::string("Max: ") + formatTemp(frame._max._celsius, frame._max._fahrenheit), 10, 50, 0xFFFF0000); // Red
+        drawLabeledTemp("Min: ", formatTemp(frame._min._celsius, frame._min._fahrenheit), margin, topBase + lineStep, 0xFF00FFFF); // Cyan
 
-        DrawText(std::string("Avg: ") + formatTemp(frame._avg._celsius, frame._avg._fahrenheit), 10, 65, 0xFF00FF00); // Green
+        drawLabeledTemp("Max: ", formatTemp(frame._max._celsius, frame._max._fahrenheit), margin, topBase + 2 * lineStep, 0xFFFF0000); // Red
+
+        drawLabeledTemp("Avg: ", formatTemp(frame._avg._celsius, frame._avg._fahrenheit), margin, topBase + 3 * lineStep, 0xFF00FF00); // Green
         
-        // Top Right: Colormap & Scale
-        int rightX = width - 120;
+        // Top Right: Colormap & Scale (right-aligned)
         int cmapIdx = _config.GetColormapIndex();
         if (cmapIdx < 0) cmapIdx = 0;
-        DrawText(AVAILABLE_COLORMAPS[cmapIdx % COLORMAP_COUNT].name, rightX, 20);
+        const std::string cmapName = AVAILABLE_COLORMAPS[cmapIdx % COLORMAP_COUNT].name;
+        int rightX = width - margin - TextWidth(cmapName);
+        DrawText(cmapName, rightX, topBase);
         
         snprintf(buffer, sizeof(buffer), "Scale: %dX", scale);
-        DrawText(buffer, rightX, 35);
+        rightX = width - margin - TextWidth(buffer);
+        DrawText(buffer, rightX, topBase + lineStep);
         
         if (_config.GetFreezeFrame()) {
-             DrawText("[FROZEN]", rightX, 50, 0xFF00FFFF);
+            const std::string frozen = "[FROZEN]";
+            DrawText(frozen, width - margin - TextWidth(frozen), topBase + 2 * lineStep, 0xFF00FFFF);
         }
 
         // Center Temp
         // Need to capture result immediately as buffer is reused
         std::string centerT = formatTemp(frame._center._celsius, frame._center._fahrenheit);
-        DrawText(centerT, centerX + 5, centerY - 5);
+        DrawText(centerT, centerX + 6 * fs, centerY - 6 * fs, 0xFFFFFFFF, /*bold=*/true);
         
          // Mouse Probe
         if (_isProbeEnabled && _mouseX >= 0 && _mouseY >= 0) {
@@ -518,7 +569,7 @@ namespace Render
                 Thermal::Temperature t = Thermal::ThermalProcessor::GetTemperatureAt(frame, _mouseY, _mouseX);
 
                 std::string probeT = formatTemp(t._celsius, t._fahrenheit);
-                DrawText(probeT, drawX + 10, drawY + 10);
+                DrawText(probeT, drawX + 12 * fs, drawY + 12 * fs, 0xFFFFFFFF, /*bold=*/true);
 
                 // Draw small box/cross at cursor
                 SDL_SetRenderDrawColor(_renderer, 255, 255, 0, 255);
@@ -529,7 +580,7 @@ namespace Render
 
         // Bottom: Controls hint
         if (height > 100) {
-            DrawText("[H] Toggle HUD  [Space] Freeze  [Q] Quit", 10, height - 10);
+            DrawText("[H] Toggle HUD  [Space] Freeze  [Q] Quit", margin, height - 12 * fs);
         }
     }
 

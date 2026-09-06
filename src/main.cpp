@@ -120,8 +120,8 @@ int main(int argc, char** argv)
         cmd.add<std::string>("file", 'f', "offline raw file input", false, "");
         cmd.add<int>("scale", 0, "initial scale factor (1-10)", false, 1);
         cmd.add("fullscreen", 0, "start in fullscreen mode");
-        cmd.add<int>("colormap", 0, "initial colormap index (0-36)", false, 0);
-        cmd.add("celsius", 0, "use Celsius units (default Fahrenheit)");
+        cmd.add<int>("colormap", 0, "initial colormap index (0-6)", false, 0);
+        cmd.add("fahrenheit", 0, "use Fahrenheit units (default Celsius)");
         cmd.add("quiet", 0, "suppress verbose output");
         cmd.add<int>("threads", 0, "override thread count (default 3)", false, 3);
         cmd.add("list", 'l', "list all available cameras and their formats");
