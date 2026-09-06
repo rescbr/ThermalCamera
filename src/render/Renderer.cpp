@@ -454,10 +454,15 @@ namespace Render
 
     void Renderer::MoveProbe(int dx, int dy)
     {
-        // Probe lives in real window pixels
+        // Probe lives in real window pixels; starts from the window center
+        if (!_probeActive)
+        {
+            _probeX = _winW / 2;
+            _probeY = _winH / 2;
+            _probeActive = true;
+        }
         _probeX = std::clamp(_probeX + dx, 0, std::max(0, _winW - 1));
         _probeY = std::clamp(_probeY + dy, 0, std::max(0, _winH - 1));
-        _probeActive = true;
     }
 
     void Renderer::ApplyStickMovement()

@@ -80,7 +80,7 @@ namespace Render
         bool _isProbeEnabled = true; // Default to true or toggleable
 
         // Temperature probe cursor (window coords, moved by mouse/gamepad)
-        int _probeX = -1;
+        int _probeX = -1;    // set to window center on first movement
         int _probeY = -1;
         bool _probeActive = false;
         int _stickX = 0;
