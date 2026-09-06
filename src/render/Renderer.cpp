@@ -196,19 +196,31 @@ namespace Render
         // area is cropped away instead.
         const int maxZoom = std::max(1, std::min(frame._width, frame._height) / 48);
         if (_zoom > maxZoom) _zoom = maxZoom;
-        int cropW = std::max(1, frame._width / _zoom);
-        int cropH = std::max(1, frame._height / _zoom);
-        const double winAspect = (double)_winW / std::max(1, _winH);
-        if ((double)cropW / cropH > winAspect)
+        int cropW, cropH;
+        if (_zoom <= 1)
         {
-            cropW = std::max(1, (int)(cropH * winAspect)); // too wide: trim sides
+            // 1x: whole frame, pillarboxed on wider windows
+            cropW = frame._width;
+            cropH = frame._height;
         }
         else
         {
-            cropH = std::max(1, (int)(cropW / winAspect)); // too tall: trim top/bottom
+            // Zoomed: crop shrinks around the probe and is shaped to the
+            // window aspect, filling the screen with no pillarbox
+            cropW = std::max(1, frame._width / _zoom);
+            cropH = std::max(1, frame._height / _zoom);
+            const double winAspect = (double)_winW / std::max(1, _winH);
+            if ((double)cropW / cropH > winAspect)
+            {
+                cropW = std::max(1, (int)(cropH * winAspect)); // too wide: trim sides
+            }
+            else
+            {
+                cropH = std::max(1, (int)(cropW / winAspect)); // too tall: trim top/bottom
+            }
+            cropW = std::min(cropW, frame._width);
+            cropH = std::min(cropH, frame._height);
         }
-        cropW = std::min(cropW, frame._width);
-        cropH = std::min(cropH, frame._height);
 
         // Probe is stored in frame coordinates; default to frame center
         if (!_probeActive)
@@ -244,6 +256,7 @@ namespace Render
         }
         _viewFit = fit;
 
+        SDL_SetRenderDrawColor(_renderer, 0, 0, 0, 255);
         SDL_RenderClear(_renderer);
         SDL_Rect srcRect = { _cropX, _cropY, cropW, cropH };
         SDL_Rect dstRect = { _viewX, _viewY, _viewW, _viewH };
