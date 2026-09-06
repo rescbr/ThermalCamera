@@ -540,7 +540,7 @@ namespace Render
 
         // Bottom: Controls hint
         if (height > 100) {
-            DrawText("[H]UD A:Map X:Frz Y:Unit St:Quit", margin, height - 12 * fs);
+            DrawText("[H]UD A:Map X:Frz Y:Unit R:Rot St:Q", margin, height - 12 * fs);
         }
     }
 
@@ -605,6 +605,12 @@ namespace Render
                         break;
                     case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:
                         _isProbeEnabled = !_isProbeEnabled;
+                        break;
+                    case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER:
+                    {
+                        int r = _config.GetRotation();
+                        _config.SetRotation((r + 1) % 4);
+                    }
                         break;
                 }
             }
