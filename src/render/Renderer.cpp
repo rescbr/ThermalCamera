@@ -488,8 +488,8 @@ namespace Render
         const int frameY = _probeY * frame._height / std::max(1, _winH);
         const float fit = std::min((float)_winW / std::max(1, frame._width / _zoom),
                                    (float)_winH / std::max(1, frame._height / _zoom));
-        int crossX = _viewX + (frameX - _cropX) * (int)fit;
-        int crossY = _viewY + (frameY - _cropY) * (int)fit;
+        int crossX = _viewX + (int)((frameX - _cropX) * fit);
+        int crossY = _viewY + (int)((frameY - _cropY) * fit);
 
         // Fall back to frame center when the probe has never been moved
         if (!_probeActive) {
