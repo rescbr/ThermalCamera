@@ -166,6 +166,8 @@ namespace Render
         // manually so the HUD can overlay the entire window.
         SDL_GetRendererOutputSize(_renderer, &_winW, &_winH);
         _fontScale = std::clamp(_winH / 320, 1, 2); // HUD text grows with window height
+        _frameW = frame._width;
+        _frameH = frame._height;
 
         // Apply analog stick probe movement (per frame)
         ApplyStickMovement();
@@ -208,21 +210,44 @@ namespace Render
         cropW = std::min(cropW, frame._width);
         cropH = std::min(cropH, frame._height);
 
-        const int probeFrameX = _probeX * frame._width / std::max(1, _winW);
-        const int probeFrameY = _probeY * frame._height / std::max(1, _winH);
-        _cropX = std::clamp(probeFrameX - cropW / 2, 0, frame._width - cropW);
-        _cropY = std::clamp(probeFrameY - cropH / 2, 0, frame._height - cropH);
+        // Probe is stored in frame coordinates; default to frame center
+        if (!_probeActive)
+        {
+            _probeX = frame._width / 2;
+            _probeY = frame._height / 2;
+            _probeActive = true;
+        }
+        _probeX = std::clamp(_probeX, 0, frame._width - 1);
+        _probeY = std::clamp(_probeY, 0, frame._height - 1);
+        _cropX = std::clamp(_probeX - cropW / 2, 0, frame._width - cropW);
+        _cropY = std::clamp(_probeY - cropH / 2, 0, frame._height - cropH);
 
         // Crop aspect matches the window aspect: fill it completely
-        const float fit = (float)_winW / cropW;
-        _viewX = 0;
-        _viewY = 0;
-        _viewW = _winW;
-        _viewH = _winH;
+        // 1x: aspect-correct letterbox. Zoomed: crop aspect already matches
+        // the window, so it fills completely.
+        float fit;
+        if (_zoom <= 1)
+        {
+            fit = std::min((float)_winW / cropW, (float)_winH / cropH);
+            _viewW = (int)(cropW * fit);
+            _viewH = (int)(cropH * fit);
+            _viewX = (_winW - _viewW) / 2;
+            _viewY = (_winH - _viewH) / 2;
+        }
+        else
+        {
+            fit = (float)_winW / cropW;
+            _viewX = 0;
+            _viewY = 0;
+            _viewW = _winW;
+            _viewH = _winH;
+        }
+        _viewFit = fit;
 
         SDL_RenderClear(_renderer);
         SDL_Rect srcRect = { _cropX, _cropY, cropW, cropH };
-        SDL_RenderCopy(_renderer, _texture, &srcRect, nullptr);
+        SDL_Rect dstRect = { _viewX, _viewY, _viewW, _viewH };
+        SDL_RenderCopy(_renderer, _texture, &srcRect, &dstRect);
         
         // Step 4: Render HUD
         if (_showHud) {
@@ -466,15 +491,15 @@ namespace Render
 
     void Renderer::MoveProbe(int dx, int dy)
     {
-        // Probe lives in real window pixels; starts from the window center
+        // Probe lives in frame pixels; starts from the frame center
         if (!_probeActive)
         {
-            _probeX = _winW / 2;
-            _probeY = _winH / 2;
+            _probeX = std::max(0, _frameW / 2);
+            _probeY = std::max(0, _frameH / 2);
             _probeActive = true;
         }
-        _probeX = std::clamp(_probeX + dx, 0, std::max(0, _winW - 1));
-        _probeY = std::clamp(_probeY + dy, 0, std::max(0, _winH - 1));
+        _probeX = std::clamp(_probeX + dx, 0, std::max(0, _frameW - 1));
+        _probeY = std::clamp(_probeY + dy, 0, std::max(0, _frameH - 1));
     }
 
     void Renderer::ApplyStickMovement()
@@ -483,11 +508,11 @@ namespace Render
         const int deadzone = 6000;
         if (std::abs(_stickX) > deadzone)
         {
-            MoveProbe((_stickX / 16000) * ProbeStep(), 0);
+            MoveProbe(_stickX / 8000, 0);
         }
         if (std::abs(_stickY) > deadzone)
         {
-            MoveProbe(0, (_stickY / 16000) * ProbeStep());
+            MoveProbe(0, _stickY / 8000);
         }
     }
 
@@ -500,13 +525,11 @@ namespace Render
         int lineStep = 19 * fs;
         int topBase = 24 * fs; // baseline of first HUD line
 
-        // Probe position on screen: through the zoom crop into the letterbox rect
-        const int frameX = _probeX * frame._width / std::max(1, _winW);
-        const int frameY = _probeY * frame._height / std::max(1, _winH);
-        const float fit = std::min((float)_winW / std::max(1, frame._width / _zoom),
-                                   (float)_winH / std::max(1, frame._height / _zoom));
-        int crossX = _viewX + (int)((frameX - _cropX) * fit);
-        int crossY = _viewY + (int)((frameY - _cropY) * fit);
+        // Probe position on screen: through the zoom crop into the view rect
+        const int frameX = std::clamp(_probeX, 0, frame._width - 1);
+        const int frameY = std::clamp(_probeY, 0, frame._height - 1);
+        int crossX = _viewX + (int)((frameX - _cropX) * _viewFit);
+        int crossY = _viewY + (int)((frameY - _cropY) * _viewFit);
 
         // Fall back to frame center when the probe has never been moved
         if (!_probeActive) {
@@ -566,11 +589,7 @@ namespace Render
         // Single measured-temperature readout at the crosshair.
         // Shows the probe temperature when active, frame center otherwise.
         {
-            int readX = frameX, readY = frameY;
-            if (!_probeActive) {
-                readX = (frame._width * _zoom) / 2 + _cropX;
-                readY = (frame._height * _zoom) / 2 + _cropY;
-            }
+            const int readX = frameX, readY = frameY;
 
             if (readX >= 0 && readX < frame._width && readY >= 0 && readY < frame._height) {
                 Thermal::Temperature t = Thermal::ThermalProcessor::GetTemperatureAt(frame, readY, readX);
@@ -603,9 +622,9 @@ namespace Render
             }
             else if (event.type == SDL_MOUSEMOTION)
             {
-                // SDL maps window coords to our logical size automatically
-                _probeX = event.motion.x;
-                _probeY = event.motion.y;
+                // Window pixels -> frame pixels through the current view
+                _probeX = (event.motion.x - _viewX) / std::max(0.1f, _viewFit) + _cropX;
+                _probeY = (event.motion.y - _viewY) / std::max(0.1f, _viewFit) + _cropY;
                 _probeActive = true;
             }
             else if (event.type == SDL_MOUSEBUTTONDOWN)

@@ -92,10 +92,13 @@ namespace Render
         bool _prevL2 = false;
         int _winW = 1280;
         int _winH = 720;
+        int _frameW = 256;
+        int _frameH = 192;
         int _viewX = 0;
         int _viewY = 0;
         int _viewW = 0;
         int _viewH = 0;
+        float _viewFit = 1.0f;
 
         // Performance tracking
         // uint32_t _lastFrameTime;
