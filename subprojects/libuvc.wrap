@@ -3,6 +3,7 @@ directory = libuvc
 url = https://github.com/libuvc/libuvc.git
 revision = 428b7fc495ba0637e31f6ad5c6af479aecb21163
 depth = 1
+patch_directory = libuvc-rocknix
 method = cmake
 
 [provide]

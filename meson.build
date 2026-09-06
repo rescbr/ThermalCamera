@@ -8,7 +8,7 @@ thread_dep = dependency('threads')
 # Compiler optimizations
 cpp = meson.get_compiler('cpp')
 extra_args = []
-if cpp.has_argument('-march=native')
+if not meson.is_cross_build() and cpp.has_argument('-march=native')
     extra_args += ['-march=native']
 endif
 

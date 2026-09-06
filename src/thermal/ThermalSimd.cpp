@@ -20,7 +20,7 @@ namespace Thermal
         // Scalar reference implementations (non-x86 fallback + test oracle)
         // ------------------------------------------------------------------
 
-        // First index i in [0, n) where data[i] == value (scalar; ~1 pass/frame)
+        // First index i in [0, n) where data[i] == value (scalar fallback)
         static size_t FirstIndexOfScalar(const uint16_t* data, size_t n, uint16_t value)
         {
             for (size_t i = 0; i < n; ++i)
@@ -28,6 +28,65 @@ namespace Thermal
                 if (data[i] == value) return i;
             }
             return 0;
+        }
+
+#if THERMAL_NEON
+        __attribute__((target("neon")))
+        static size_t FirstIndexOfNeon(const uint16_t* data, size_t n, uint16_t value)
+        {
+            const uint16x8_t target = vdupq_n_u16(value);
+            size_t i = 0;
+            for (; i + 8 <= n; i += 8)
+            {
+                const uint16x8_t v = vld1q_u16(data + i);
+                const uint16x8_t eq = vceqq_u16(v, target);
+                const uint64x2_t m = vreinterpretq_u64_u16(eq);
+                if ((vgetq_lane_u64(m, 0) | vgetq_lane_u64(m, 1)) != 0)
+                {
+                    for (int j = 0; j < 8; ++j)
+                    {
+                        if (data[i + j] == value) return i + j;
+                    }
+                }
+            }
+            for (; i < n; ++i)
+            {
+                if (data[i] == value) return i;
+            }
+            return 0;
+        }
+#elif THERMAL_X86
+        __attribute__((target("sse2")))
+        static size_t FirstIndexOfSse2(const uint16_t* data, size_t n, uint16_t value)
+        {
+            const __m128i target = _mm_set1_epi16(static_cast<short>(value));
+            size_t i = 0;
+            for (; i + 8 <= n; i += 8)
+            {
+                const __m128i eq = _mm_cmpeq_epi16(_mm_loadu_si128(reinterpret_cast<const __m128i*>(data + i)), target);
+                const int mask = _mm_movemask_epi8(eq);
+                if (mask != 0)
+                {
+                    return i + (__builtin_ctz(mask) / 2); // first bit pair = first word
+                }
+            }
+            for (; i < n; ++i)
+            {
+                if (data[i] == value) return i;
+            }
+            return 0;
+        }
+#endif
+
+        static size_t FirstIndexOf(const uint16_t* data, size_t n, uint16_t value)
+        {
+#if THERMAL_NEON
+            return FirstIndexOfNeon(data, n, value);
+#elif THERMAL_X86
+            return FirstIndexOfSse2(data, n, value);
+#else
+            return FirstIndexOfScalar(data, n, value);
+#endif
         }
 
         static void StatsMinMaxSumScalar(
@@ -142,8 +201,8 @@ namespace Thermal
             outMin = minV;
             outMax = maxV;
             outSum = sum;
-            outMinIndex = FirstIndexOfScalar(data, pixelCount, minV);
-            outMaxIndex = FirstIndexOfScalar(data, pixelCount, maxV);
+            outMinIndex = FirstIndexOf(data, pixelCount, minV);
+            outMaxIndex = FirstIndexOf(data, pixelCount, maxV);
         }
 
         // ------------------------------------------------------------------
@@ -209,8 +268,31 @@ namespace Thermal
             outMin = tailMin;
             outMax = tailMax;
             outSum = sum;
-            outMinIndex = FirstIndexOfScalar(data, pixelCount, tailMin);
-            outMaxIndex = FirstIndexOfScalar(data, pixelCount, tailMax);
+
+            // Single SIMD pass recovering BOTH first-occurrence indices
+            outMinIndex = 0;
+            outMaxIndex = 0;
+            const uint16x8_t tMin = vdupq_n_u16(tailMin);
+            const uint16x8_t tMax = vdupq_n_u16(tailMax);
+            for (size_t j = 0; j < pixelCount && (outMinIndex == 0 || outMaxIndex == 0); j += 8)
+            {
+                const uint16x8_t v = vld1q_u16(data + j);
+                const uint64x2_t eqMin = vreinterpretq_u64_u16(vceqq_u16(v, tMin));
+                const uint64x2_t eqMax = vreinterpretq_u64_u16(vceqq_u16(v, tMax));
+
+                if (outMinIndex == 0 && (vgetq_lane_u64(eqMin, 0) | vgetq_lane_u64(eqMin, 1)) != 0)
+                {
+                    const size_t lim = j + 8 <= pixelCount ? j + 8 : pixelCount;
+                    for (size_t k = j; k < lim; ++k)
+                        if (data[k] == tailMin) { outMinIndex = k; break; }
+                }
+                if (outMaxIndex == 0 && (vgetq_lane_u64(eqMax, 0) | vgetq_lane_u64(eqMax, 1)) != 0)
+                {
+                    const size_t lim = j + 8 <= pixelCount ? j + 8 : pixelCount;
+                    for (size_t k = j; k < lim; ++k)
+                        if (data[k] == tailMax) { outMaxIndex = k; break; }
+                }
+            }
         }
 
         // ------------------------------------------------------------------
@@ -370,10 +452,8 @@ namespace Thermal
                 vmin = vminq_u16(vmin, v);
                 vmax = vmaxq_u16(vmax, v);
 
-                // Widen to 32-bit halves and accumulate
-                const uint32x4_t lo = vmovl_u16(vget_low_u16(v));
-                const uint32x4_t hi = vmovl_u16(vget_high_u16(v));
-                vsum = vaddq_u32(vsum, vaddq_u32(lo, hi));
+                // Pairwise add-and-accumulate: sums adjacent u16 pairs into u32 lanes
+                vsum = vpadalq_u16(vsum, v);
             }
 
             uint16_t minV = vminvq_u16(vmin);
@@ -391,8 +471,8 @@ namespace Thermal
             outMin = minV;
             outMax = maxV;
             outSum = sum;
-            outMinIndex = FirstIndexOfScalar(data, pixelCount, minV);
-            outMaxIndex = FirstIndexOfScalar(data, pixelCount, maxV);
+            outMinIndex = FirstIndexOf(data, pixelCount, minV);
+            outMaxIndex = FirstIndexOf(data, pixelCount, maxV);
         }
 
         static void ColormapLookupNeon(
@@ -424,9 +504,11 @@ namespace Thermal
                 const uint32x4_t dLo = vsubl_u16(vget_low_u16(w), vget_low_u16(vMin));
                 const uint32x4_t dHi = vsubl_u16(vget_high_u16(w), vget_high_u16(vMin));
 
+                // prod = delta * 255 (exact: < 2^24); vcvt rounds to nearest, corrected below
+                const uint32x4_t deltas[2] = {dLo, dHi};
                 for (int half = 0; half < 2; ++half)
                 {
-                    const uint32x4_t delta = half == 0 ? dLo : dHi;
+                    const uint32x4_t delta = deltas[half];
 
                     // prod = delta * 255 (exact: < 2^24)
                     const float32x4_t prod = vmulq_f32(vcvtq_f32_u32(delta), k255F);

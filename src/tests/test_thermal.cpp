@@ -65,7 +65,7 @@ void TestSimdParity()
         // Colormap with several ranges, including extremes
         const uint16_t ranges[][2] = {
             {10000, 11000}, {0, 65535}, {40000, 40001}, {65000, 65535},
-            {data.front(), data.front() + 3}, {0, 256}, {65280, 65535}
+            {data.front(), static_cast<uint16_t>(data.front() + 3)}, {0, 256}, {65280, 65535}
         };
         for (auto& r : ranges)
         {

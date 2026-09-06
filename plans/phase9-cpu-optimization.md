@@ -528,3 +528,19 @@ macOS ARM compiles the scalar reference.
 - Verified by aarch64 cross syntax-check only (clang --target=aarch64-linux-gnu);
   runtime + parity test verification pending next macOS session (test suite
   exercises the NEON path there automatically).
+
+### Phase 9c addendum: NEON runtime-verified + first-index SIMD (2026-09-06)
+
+- NEON kernels verified on real hardware (ROCKNIX console, RK3566/Cortex-A55):
+  all parity tests bit-exact vs scalar oracle.
+- SIMD first-index recovery added (was scalar pass dominating: x86 stats
+  7.0 -> 1.5 us/frame; NEON uses vceqq + u64 lane OR reduction).
+- RK3566 quirk: libusb isochronous packet buffers can be NULL with
+  actual_length > 0; unpatched libuvc dereferences them (SIGTRAP via LLVM
+  null-deref trap). Fixed via wrap patch (subprojects/packagefiles/
+  libuvc-rocknix): guard NULL payload and NULL stream handle in
+  _uvc_process_payload/_uvc_stream_callback.
+- Deployed on device: stable 26 FPS under sway/wayland (Mali blob panics on
+  SDL fullscreen toggle - launcher uses swaymsg fullscreen instead).
+- Note: on the in-order A55 the compiler auto-vectorizes the scalar reference
+  well; the win there is correctness + the memcpy extraction, not raw SIMD.
