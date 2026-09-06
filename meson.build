@@ -22,6 +22,7 @@ if host_machine.system() == 'darwin'
     src_files = files(
         'src/render/Renderer.cpp',
         'src/thermal/ThermalProcessor.cpp',
+        'src/thermal/ThermalSimd.cpp',
         'src/camera/ICamera.hpp',
         'src/camera/Camera.hpp',
         'src/camera/ObjCPtr.hpp',
@@ -42,6 +43,7 @@ else
     src_files = files(
         'src/render/Renderer.cpp',
         'src/thermal/ThermalProcessor.cpp',
+        'src/thermal/ThermalSimd.cpp',
         'src/camera/ICamera.hpp',
         'src/camera/Camera.hpp',
         'src/camera/UvcCameraImpl.cpp',
@@ -98,14 +100,14 @@ if host_machine.system() == 'darwin'
 endif
 
 test_exe = executable('test_thermal',
-    files('src/tests/test_thermal.cpp', 'src/thermal/ThermalProcessor.cpp'),
+    files('src/tests/test_thermal.cpp', 'src/thermal/ThermalProcessor.cpp', 'src/thermal/ThermalSimd.cpp'),
     dependencies: [thread_dep],
     cpp_args: ['-std=c++17']
 )
 test('thermal_tests', test_exe)
 
 test_renderer = executable('test_renderer',
-    files('src/tests/test_renderer.cpp', 'src/render/Renderer.cpp', 'src/thermal/ThermalProcessor.cpp'),
+    files('src/tests/test_renderer.cpp', 'src/render/Renderer.cpp', 'src/thermal/ThermalProcessor.cpp', 'src/thermal/ThermalSimd.cpp'),
     dependencies: [sdl2_dep, thread_dep],
     cpp_args: ['-std=c++17']
 )

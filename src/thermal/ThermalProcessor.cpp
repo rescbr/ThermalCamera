@@ -1,8 +1,10 @@
 #include "ThermalProcessor.hpp"
+#include "ThermalSimd.hpp"
 #include "../Error.hpp"
 #include "../Profile.hpp"
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <iostream>
 #include <limits>
 #include <vector>
@@ -56,12 +58,8 @@ namespace Thermal
         }
 
         // Camera sends little-endian 16-bit values (standard UVC thermal data)
-        // With native YUYV capture, we can read directly as LE
-        for (int i = 0; i < width * height; ++i)
-        {
-            uint16_t rawValue = rawFrame[offset + i * 2] | (rawFrame[offset + i * 2 + 1] << 8);
-            output._data[i] = rawValue;
-        }
+        // With native YUYV capture on a little-endian host, this is a plain copy
+        std::memcpy(output._data.data(), rawFrame + offset, width * height * sizeof(uint16_t));
     }
 
     void ThermalProcessor::ApplyRotation(ThermalFrame& frame)
@@ -119,55 +117,16 @@ namespace Thermal
             return;
         }
 
-        uint16_t minK = std::numeric_limits<uint16_t>::max();
-        uint16_t maxK = std::numeric_limits<uint16_t>::min();
+        uint16_t minK = 0;
+        uint16_t maxK = 0;
         uint64_t sumK = 0;
-        
-        int minIdx = 0;
-        int maxIdx = 0;
+        size_t minIdx = 0;
+        size_t maxIdx = 0;
 
         const size_t pixelCount = frame._data.size();
         const uint16_t* data = frame._data.data();
 
-        // Optimized loop with unrolling (process 8 pixels at once)
-        size_t i = 0;
-        for (; i + 8 <= pixelCount; i += 8)
-        {
-            for (int j = 0; j < 8; ++j)
-            {
-                uint16_t val = data[i + j];
-                sumK += val;
-                
-                if (val < minK)
-                {
-                    minK = val;
-                    minIdx = i + j;
-                }
-                if (val > maxK)
-                {
-                    maxK = val;
-                    maxIdx = i + j;
-                }
-            }
-        }
-        
-        // Handle remaining pixels
-        for (; i < pixelCount; ++i)
-        {
-            uint16_t val = data[i];
-            sumK += val;
-            
-            if (val < minK)
-            {
-                minK = val;
-                minIdx = i;
-            }
-            if (val > maxK)
-            {
-                maxK = val;
-                maxIdx = i;
-            }
-        }
+        Simd::StatsMinMaxSum(data, pixelCount, minK, minIdx, maxK, maxIdx, sumK);
 
         uint16_t avgK = static_cast<uint16_t>(sumK / pixelCount);
 

@@ -27,6 +27,7 @@ Replaced CPU scaling with SDL's GPU-accelerated scaling:
 1. **Removed `ScaleFrame()` method** (lines 310-360)
 2. **Removed `_scaledBuffer` member** from Renderer class
 3. **Changed texture access mode** from `SDL_TEXTUREACCESS_STREAMING` to `SDL_TEXTUREACCESS_STATIC`
+   *(Correction: the code actually retains `SDL_TEXTUREACCESS_STREAMING` — see `src/render/Renderer.cpp`. Perf impact is negligible.)*
 4. **Updated `RenderFrame()` workflow**:
    - Apply colormap to source-sized texture (256×192)
    - Let SDL handle scaling during `SDL_RenderCopy()`
@@ -299,6 +300,7 @@ void Renderer::DrawText(const std::string& text, int x, int y, uint32_t color)
 1. **Phase 1: GPU Scaling** (highest impact, cleanest change) - **COMPLETED**
 2. **Phase 2: Colormap Optimization** (significant, well-contained) - **COMPLETED**
 3. **Phase 3: Text Rendering** (smaller but clean architecture) - **SKIPPED** (optimal to skip for now)
+   *(Correction: text rendering was later optimized with a glyph texture atlas — see `PERF_WORK.md` Phase 5 and `Renderer::InitializeFont()`.)*
 4. **Phase 4: Minor Tweaks** (incremental improvements) - **COMPLETED**
 5. **Testing & Benchmarking** (after each phase, comprehensive at end) - **IN PROGRESS**
 
@@ -491,3 +493,38 @@ for (AVCaptureConnection* connection in _videoOutput.connections)
 | Memory Usage | ~1.7 MB extra for scale=3 | 0 (no scaled buffer) | **1.7 MB saved** |
 | FPS (scale=1) | 25-26 | 25-26 | Same |
 | FPS (scale=3) | 20-25 | 21-26 | Improved |
+
+## Phase 9b: Linux amd64 SIMD (2026-09-06)
+
+New file `src/thermal/ThermalSimd.{hpp,cpp}` with runtime CPU dispatch
+(`__builtin_cpu_supports`), tiers: AVX-512BW/F -> SSE4.1 -> scalar (stats);
+AVX-512F -> AVX2 -> scalar (colormap). x86-only (`#if defined(__x86_64__)`),
+macOS ARM compiles the scalar reference.
+
+- `ExtractThermalData`: byte-shuffle loop replaced with `std::memcpy`
+  (YUYV thermal sub-frame is already little-endian packed uint16 on LE hosts).
+- `CalculateTemperatureStats`: SIMD min/max/sum kernels; first-occurrence index
+  recovered in a second pass (firstIndexOf). SSE4.1 uses `_mm_minpos_epu16`
+  (horizontal min with lane index in one op); GCC has no `_mm512_reduce_min_epu16`,
+  AVX-512 path folds to 128-bit + minpos instead.
+- `Renderer::ApplyColormap`: gather-based lookup (`vpgatherdd`). Exact truncated
+  division `(delta*255)/range` reproduced via exact float math (< 2^24) with
+  two-sided correction masks - bit-identical to scalar (verified by tests).
+- Benchmarks (Ryzen/Zen-class AVX-512, 256x192 frame, us/frame):
+  stats 26.3 -> 7.0 (3.8x), colormap 51.7 -> 23.5 (2.2x).
+- Parity tests in `test_thermal.cpp`: sizes 1..49152 (tail coverage), 7 range
+  regimes incl. {0,65535}, single-step, constant input; memcmp-exact.
+
+### Phase 9c: ARM NEON paths (2026-09-06)
+
+- aarch64 NEON is baseline -> no runtime dispatch (`#if THERMAL_NEON` branch
+  checked before the x86 tier selection).
+- Stats: vminq/vmaxq accumulate, vminvq/vmaxvq reduce, vmovl+vaddq widening
+  sum; identical structure to the SSE4.1 kernel.
+- Colormap: NEON has no gather - indices computed 8-wide in vectors (same
+  exact float division + correction; note vcvtq_u32_f32 rounds-to-nearest per
+  FPCR vs x86 cvttps truncate, single correction step suffices), palette
+  lookups stay scalar.
+- Verified by aarch64 cross syntax-check only (clang --target=aarch64-linux-gnu);
+  runtime + parity test verification pending next macOS session (test suite
+  exercises the NEON path there automatically).

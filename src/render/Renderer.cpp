@@ -6,6 +6,7 @@
 #include "../fonts/EspySansBold_14.h"
 #include <iostream>
 #include <stdexcept>
+#include "../thermal/ThermalSimd.hpp"
 #include <cstring>
 #include <algorithm>
 #include <vector>
@@ -271,27 +272,11 @@ namespace Render
         int height = frame._height;
 
         // Fast path for pitch == width * 4 (Contiguous)
-        int range = maxK - minK;
-
         if (pitch == width * 4)
         {
-            uint32_t* outputBuffer = static_cast<uint32_t*>(pixels);
-            const size_t pixelCount = width * height;
-
-            for (size_t i = 0; i < pixelCount; ++i)
-            {
-                uint16_t val = input[i];
-
-                if (val < minK) val = minK;
-                if (val > maxK) val = maxK;
-
-                uint32_t delta = val - minK;
-                int index = (delta * 255) / range;
-                if (index < 0) index = 0;
-                if (index > 255) index = 255;
-
-                outputBuffer[i] = palette[index];
-            }
+            Thermal::Simd::ColormapLookup(
+                input, static_cast<uint32_t*>(pixels),
+                static_cast<size_t>(width) * height, minK, maxK, palette);
         }
         else
         {
@@ -299,19 +284,9 @@ namespace Render
             uint8_t* rowPtr = static_cast<uint8_t*>(pixels);
             for (int y = 0; y < height; ++y)
             {
-                uint32_t* outputBuffer = reinterpret_cast<uint32_t*>(rowPtr);
-                for (int x = 0; x < width; ++x)
-                {
-                    uint16_t val = input[y * width + x];
-                    if (val < minK) val = minK;
-                    if (val > maxK) val = maxK;
-
-                    uint32_t delta = val - minK;
-                    int index = (delta * 255) / range;
-                    if (index < 0) index = 0;
-                    if (index > 255) index = 255;
-                    outputBuffer[x] = palette[index];
-                }
+                Thermal::Simd::ColormapLookup(
+                    input + y * width, reinterpret_cast<uint32_t*>(rowPtr),
+                    width, minK, maxK, palette);
                 rowPtr += pitch;
             }
         }
