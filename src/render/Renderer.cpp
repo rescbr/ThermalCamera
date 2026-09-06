@@ -188,29 +188,41 @@ namespace Render
         SDL_UnlockTexture(_texture);
 
         // Step 3: Render texture to screen (GPU Scaling)
-        // Zoom: render a crop of the frame centered on the probe, scaled to
-        // fill the window while preserving the frame aspect (letterboxed).
+        // Zoom: render a crop of the frame centered on the probe. The crop is
+        // shaped to the window's aspect ratio, so the image fills the whole
+        // window (no pillarbox) while staying undistorted - the excess frame
+        // area is cropped away instead.
         const int maxZoom = std::max(1, std::min(frame._width, frame._height) / 48);
         if (_zoom > maxZoom) _zoom = maxZoom;
-        const int cropW = std::max(1, frame._width / _zoom);
-        const int cropH = std::max(1, frame._height / _zoom);
+        int cropW = std::max(1, frame._width / _zoom);
+        int cropH = std::max(1, frame._height / _zoom);
+        const double winAspect = (double)_winW / std::max(1, _winH);
+        if ((double)cropW / cropH > winAspect)
+        {
+            cropW = std::max(1, (int)(cropH * winAspect)); // too wide: trim sides
+        }
+        else
+        {
+            cropH = std::max(1, (int)(cropW / winAspect)); // too tall: trim top/bottom
+        }
+        cropW = std::min(cropW, frame._width);
+        cropH = std::min(cropH, frame._height);
+
         const int probeFrameX = _probeX * frame._width / std::max(1, _winW);
         const int probeFrameY = _probeY * frame._height / std::max(1, _winH);
         _cropX = std::clamp(probeFrameX - cropW / 2, 0, frame._width - cropW);
         _cropY = std::clamp(probeFrameY - cropH / 2, 0, frame._height - cropH);
 
-        // Aspect-correct destination rect (letterbox) inside the window
-        const float fit = std::min((float)_winW / cropW, (float)_winH / cropH);
-        _viewW = (int)(cropW * fit);
-        _viewH = (int)(cropH * fit);
-        _viewX = (_winW - _viewW) / 2;
-        _viewY = (_winH - _viewH) / 2;
+        // Crop aspect matches the window aspect: fill it completely
+        const float fit = (float)_winW / cropW;
+        _viewX = 0;
+        _viewY = 0;
+        _viewW = _winW;
+        _viewH = _winH;
 
-        SDL_SetRenderDrawColor(_renderer, 0, 0, 0, 255);
         SDL_RenderClear(_renderer);
         SDL_Rect srcRect = { _cropX, _cropY, cropW, cropH };
-        SDL_Rect dstRect = { _viewX, _viewY, _viewW, _viewH };
-        SDL_RenderCopy(_renderer, _texture, &srcRect, &dstRect);
+        SDL_RenderCopy(_renderer, _texture, &srcRect, nullptr);
         
         // Step 4: Render HUD
         if (_showHud) {
