@@ -188,9 +188,22 @@ namespace Render
         SDL_UnlockTexture(_texture);
 
         // Step 3: Render texture to screen (GPU Scaling)
+        // Zoom: render a crop of the frame centered on the probe. The crop
+        // keeps the frame aspect, so the image stays undistorted and fills
+        // the same logical area as the unzoomed view.
+        const int maxZoom = std::max(1, std::min(frame._width, frame._height) / 48);
+        if (_zoom > maxZoom) _zoom = maxZoom;
+        const int cropW = std::max(1, frame._width / _zoom);
+        const int cropH = std::max(1, frame._height / _zoom);
+        const int probeFrameX = _probeX / std::max(1, scale);
+        const int probeFrameY = _probeY / std::max(1, scale);
+        _cropX = std::clamp(probeFrameX - cropW / 2, 0, frame._width - cropW);
+        _cropY = std::clamp(probeFrameY - cropH / 2, 0, frame._height - cropH);
+
         SDL_SetRenderDrawColor(_renderer, 0, 0, 0, 255);
         SDL_RenderClear(_renderer);
-        SDL_RenderCopy(_renderer, _texture, nullptr, nullptr);
+        SDL_Rect srcRect = { _cropX, _cropY, cropW, cropH };
+        SDL_RenderCopy(_renderer, _texture, &srcRect, nullptr);
         
         // Step 4: Render HUD
         if (_showHud) {
@@ -522,25 +535,31 @@ namespace Render
         
          // Probe readout (gamepad stick / mouse)
         if (_isProbeEnabled && _probeActive) {
-            int frameX = _probeX / std::max(1, _config.GetScaleFactor());
-            int frameY = _probeY / std::max(1, _config.GetScaleFactor());
+            const int sc = std::max(1, scale);
+            const int frameX = _probeX / sc;
+            const int frameY = _probeY / sc;
+
+            // Map frame coords to on-screen position through the zoom crop
+            const int drawX = (frameX - _cropX) * sc * _zoom;
+            const int drawY = (frameY - _cropY) * sc * _zoom;
 
             if (frameX >= 0 && frameX < frame._width && frameY >= 0 && frameY < frame._height) {
                 Thermal::Temperature t = Thermal::ThermalProcessor::GetTemperatureAt(frame, frameY, frameX);
 
                 std::string probeT = formatTemp(t._celsius, t._fahrenheit);
-                DrawText(probeT, _probeX + 12 * fs, _probeY + 12 * fs, 0xFFFFFFFF, /*bold=*/true);
+                DrawText(probeT, drawX + 12 * fs, drawY + 12 * fs, 0xFFFFFFFF, /*bold=*/true);
 
                 // Draw small box/cross at probe point
                 SDL_SetRenderDrawColor(_renderer, 255, 255, 0, 255);
-                SDL_Rect rect = {_probeX - 2 * fs, _probeY - 2 * fs, 5 * fs, 5 * fs};
+                SDL_Rect rect = {drawX - 2 * fs, drawY - 2 * fs, 5 * fs, 5 * fs};
                  SDL_RenderDrawRect(_renderer, &rect);
             }
         }
 
         // Bottom: Controls hint
         if (height > 100) {
-            DrawText("[H]UD A:Map X:Frz Y:Unit R:Rot St:Q", margin, height - 12 * fs);
+            DrawText("A:Map X:Frz Y:Unit R:Rot L2/R2:Zoom", margin, height - 12 * fs);
+            DrawText("[H]UD Sel:HUD Start:Quit +/-:Zoom", margin, height - 26 * fs);
         }
     }
 
@@ -624,6 +643,18 @@ namespace Render
                 {
                     _stickY = event.caxis.value;
                 }
+                else if (event.caxis.axis == SDL_CONTROLLER_AXIS_TRIGGERRIGHT)
+                {
+                    const bool held = event.caxis.value > 8000;
+                    if (held && !_prevR2) ZoomIn();
+                    _prevR2 = held;
+                }
+                else if (event.caxis.axis == SDL_CONTROLLER_AXIS_TRIGGERLEFT)
+                {
+                    const bool held = event.caxis.value > 8000;
+                    if (held && !_prevL2) ZoomOut();
+                    _prevL2 = held;
+                }
             }
             else if (event.type == SDL_CONTROLLERDEVICEADDED)
             {
@@ -644,17 +675,11 @@ namespace Render
                     case SDLK_PLUS:
                     case SDLK_KP_PLUS:
                     case SDLK_EQUALS:
-                         {
-                             int s = _config.GetScaleFactor();
-                             if (s < 10) _config.SetScaleFactor(s + 1);
-                         }
+                         ZoomIn();
                          break;
                     case SDLK_MINUS:
                     case SDLK_KP_MINUS:
-                         {
-                             int s = _config.GetScaleFactor();
-                             if (s > 1) _config.SetScaleFactor(s - 1);
-                         }
+                         ZoomOut();
                          break;
                     case SDLK_LEFTBRACKET:
                          {

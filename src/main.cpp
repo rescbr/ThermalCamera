@@ -343,7 +343,7 @@ int main(int argc, char** argv)
         // 6. Start Render Loop (Main Thread) (Task 4.5 & 4.7)
         LOG_INFO("Initializing Renderer...");
         Render::Renderer renderer(sharedState->config);
-        if (!renderer.Initialize("Thermal Camera", CameraConstants::FRAME_WIDTH, CameraConstants::FRAME_HEIGHT)) {
+        if (!renderer.Initialize("Thermal Camera", CameraConstants::THERMAL_WIDTH, CameraConstants::THERMAL_HEIGHT)) {
             LOG_ERROR("Failed to initialize renderer");
             sharedState->Shutdown();
             return 1;

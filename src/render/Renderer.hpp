@@ -47,6 +47,8 @@ namespace Render
         int ProbeStep() const;
         void MoveProbe(int dx, int dy);
         void ApplyStickMovement();
+        void ZoomIn() { if (_zoom < 16) _zoom *= 2; }
+        void ZoomOut() { if (_zoom > 1) _zoom /= 2; }
 
         Config::Config& _config;
 
@@ -83,6 +85,11 @@ namespace Render
         bool _probeActive = false;
         int _stickX = 0;
         int _stickY = 0;
+        int _zoom = 1;          // power of two; crop = frame / zoom
+        int _cropX = 0;
+        int _cropY = 0;
+        bool _prevR2 = false;
+        bool _prevL2 = false;
 
         // Performance tracking
         // uint32_t _lastFrameTime;
